@@ -1,0 +1,21 @@
+[Unit]
+Description=Personal AIVA MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aiva
+Group=aiva
+WorkingDirectory=/opt/aiva/server
+EnvironmentFile=/opt/aiva/.env
+ExecStart=/opt/aiva/venv/bin/python /opt/aiva/server/src/server.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/aiva
+
+[Install]
+WantedBy=multi-user.target
