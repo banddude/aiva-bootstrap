@@ -1,47 +1,38 @@
 # Personal AIVA MCP Bootstrap
 
-A clean, self-hosted MCP server for a fresh Oracle Cloud Ubuntu VM. It gives ChatGPT controlled access to the user's own server through tools for shell commands, files, and personal skills.
+One command turns a fresh Oracle Cloud Ubuntu VM into a personal MCP server that ChatGPT can use to run commands, manage files, and maintain personal skills.
+
+## One-line install
+
+SSH into the Oracle VM and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/banddude/aiva-bootstrap/main/bootstrap.sh | sudo bash
+```
+
+The installer handles Python, the MCP service, Tailscale, startup services, and an unguessable MCP URL path.
+
+Tailscale requires one browser approval. Open the login URL printed by the installer. If the script has already returned, run:
+
+```bash
+sudo /opt/aiva/finish-setup.sh
+```
+
+It prints the final MCP URL. Paste that URL into ChatGPT when creating a custom MCP app, scan the tools, and call `health`.
 
 ## Give this repository to an agent
 
-Tell the agent:
-
-> Clone this repository on my Oracle Ubuntu server and follow AGENTS.md exactly. Do not stop until ChatGPT has scanned the MCP tools successfully.
-
-## Manual install
-
-```bash
-git clone https://github.com/banddude/aiva-bootstrap.git
-cd aiva-bootstrap
-sudo ./install.sh
-sudo tailscale up
-sudo tailscale funnel --bg 8000
-tailscale funnel status
-```
-
-Take the HTTPS Funnel address and append `/mcp`.
-
-Example:
+Send the agent this repository URL:
 
 ```text
-https://oracle-name.example-tailnet.ts.net/mcp
+https://github.com/banddude/aiva-bootstrap
 ```
 
-## Connect to ChatGPT
+Tell it:
 
-Current ChatGPT setup:
+> Follow AGENTS.md exactly. Install this on my Oracle VM and do not stop until the final MCP URL is printed and ChatGPT can call the health and run_command tools.
 
-1. Use ChatGPT on the web.
-2. Open **Settings → Apps → Advanced Settings** and enable **Developer mode**.
-3. Open **Settings → Apps → Create**.
-4. Enter the Tailscale Funnel `/mcp` endpoint.
-5. Select **No authentication**. The URL is an unlisted, user-controlled endpoint; do not share it.
-6. Select **Scan tools**, then create the app.
-7. Test by asking ChatGPT to call `health`.
-
-Full write-capable MCP support may depend on the user's ChatGPT plan and workspace permissions. Pro accounts can have more limited custom-app capabilities than Business or Enterprise/Edu accounts.
-
-## Installed tools
+## Tools
 
 - `health`
 - `run_command`
@@ -53,22 +44,22 @@ Full write-capable MCP support may depend on the user's ChatGPT plan and workspa
 - `get_skill`
 - `save_skill`
 
-## Security model
+## Isolation and exposure
 
-- The MCP process runs as a dedicated `aiva` Linux user.
-- File tools are restricted to `/opt/aiva/workspace`.
-- Skills are restricted to `/opt/aiva/skills`.
-- The service has systemd hardening.
-- The Oracle firewall does not need port 8000 exposed.
-- HTTPS exposure is provided by Tailscale Funnel.
+- Runs as a dedicated `aiva` Linux user.
+- File tools stay under `/opt/aiva/workspace`.
+- Personal skills stay under `/opt/aiva/skills`.
+- The MCP port is not exposed through Oracle's public firewall.
+- Tailscale Funnel supplies HTTPS.
+- The public endpoint includes a randomly generated 128-bit path. Treat the full URL as a password and do not post it publicly.
 
-The `run_command` tool intentionally provides broad command execution inside the AIVA workspace. Only connect this server to a ChatGPT account you trust.
+`run_command` intentionally gives broad command access as the `aiva` Linux user. Connect it only to the owner's ChatGPT account.
 
-## Useful commands
+## Service commands
 
 ```bash
 sudo systemctl status aiva-mcp
 sudo journalctl -u aiva-mcp -f
 sudo systemctl restart aiva-mcp
-tailscale funnel status
+sudo cat /opt/aiva/mcp-url
 ```

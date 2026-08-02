@@ -1,27 +1,24 @@
 # Agent Installation Contract
 
-Your job is to turn the current fresh Oracle Ubuntu VM into the user's personal remote MCP server.
+Install a personal remote MCP server on the current fresh Oracle Ubuntu VM.
 
 ## Required procedure
 
-1. Read this file and README.md completely.
-2. Confirm the OS is Ubuntu 22.04 or 24.04 and that you have sudo access.
-3. Run `sudo ./install.sh` from this repository.
-4. Verify `systemctl is-active aiva-mcp` returns `active`.
-5. Verify locally with `curl -i http://127.0.0.1:8000/mcp`. An MCP protocol response or method-related HTTP response confirms the route exists.
-6. Run `sudo tailscale up`. If it prints an authentication URL, give that exact URL to the user and wait for them to approve it.
-7. Run `sudo tailscale funnel --bg 8000`.
-8. Run `tailscale funnel status` and extract the public HTTPS URL.
-9. The final MCP endpoint is that URL plus `/mcp`.
-10. Give the user exact current ChatGPT connection steps from the README.
-11. In ChatGPT, have the user enable Developer Mode, create a custom app, enter the endpoint, choose no authentication, scan tools, and create it.
-12. Test the `health`, `list_skills`, and `get_skill("start-here")` tools from ChatGPT.
-13. Begin onboarding by interviewing the user and then update `start-here` using `save_skill`.
+1. Confirm Ubuntu 22.04 or 24.04 and working sudo access.
+2. Run exactly:
+   `curl -fsSL https://raw.githubusercontent.com/banddude/aiva-bootstrap/main/bootstrap.sh | sudo bash`
+3. If Tailscale prints a login URL, give that exact URL to the user and wait for approval.
+4. Run `sudo /opt/aiva/finish-setup.sh` after approval.
+5. Record the exact final MCP URL it prints. Do not shorten or alter it.
+6. Verify `systemctl is-active aiva-mcp` returns `active`.
+7. Add the final URL to ChatGPT as a custom MCP app and scan tools.
+8. From ChatGPT, test `health`, `run_command("whoami && hostname && pwd")`, and `get_skill("start-here")`.
+9. Start onboarding and update `start-here` only with information confirmed by this user.
 
 ## Rules
 
-- Never copy another person's credentials, memories, configuration, databases, or private skills into this installation.
-- Never commit `.env`, OAuth tokens, SSH keys, databases, or generated personal skills.
-- Do not expose port 8000 directly in Oracle security lists. Tailscale Funnel provides HTTPS.
-- Do not stop after installing packages. The task is complete only when the public MCP endpoint is working and ChatGPT has successfully scanned the tools.
-- If Tailscale requires human authentication, that is the only expected pause.
+- Do not copy Mike Shaffer's data, secrets, memories, services, or private skills.
+- Do not expose Oracle port 8765 publicly.
+- Treat `/opt/aiva/mcp-url` as a secret.
+- Do not stop merely because packages installed. Completion means the final URL is printed and ChatGPT successfully scans and calls tools.
+- The expected human pause is the Tailscale browser approval.
