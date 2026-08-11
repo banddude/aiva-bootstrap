@@ -352,7 +352,7 @@ def notify(
     *,
     target: Annotated[Literal["aiva", "mike", "all"], Field(description="Who to notify. 'aiva' is the AIVA session inbox and is the right choice for anything routine. 'mike' texts a real person's phone, so reserve it for something he needs to see right now. 'all' sends to both.")],
     message: Annotated[str, Field(description="The notification text. Write it so it stands alone, because the reader has none of your context.")],
-    source: Annotated[str | None, Field(alias="from", description="Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.")] = None,
+    source: Annotated[str | None, Field(validation_alias="from", description="Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.")] = None,
 ) -> CallToolResult:
     if not message.strip():
         return _result({"ok": False, "status": "failed", "error": "'message' is required and cannot be empty"})
