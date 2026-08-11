@@ -14,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp
 
 
 def _bootstrap_static_token() -> None:
@@ -35,7 +35,6 @@ _bootstrap_static_token()
 
 from oauth_compat import (  # noqa: E402
     PUBLIC_BASE,
-    PUBLIC_MCP,
     CompatTokenVerifier,
     _data,
     _row,
@@ -69,7 +68,7 @@ mcp = MCPServer(
     token_verifier=CompatTokenVerifier(),
     auth=AuthSettings(
         issuer_url=AnyHttpUrl(PUBLIC_BASE),
-        resource_server_url=AnyHttpUrl(PUBLIC_MCP),
+        resource_server_url=AnyHttpUrl(PUBLIC_BASE),
         required_scopes=["aiva"],
     ),
 )
@@ -119,11 +118,6 @@ async def oauth_metadata_root(request: Request) -> Response:
     return await metadata_route(request)
 
 
-@mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
-async def oauth_metadata_mcp(request: Request) -> Response:
-    return await metadata_route(request)
-
-
 @mcp.custom_route("/oauth/register", methods=["POST"])
 async def oauth_register(request: Request) -> Response:
     return await register_route(request)
@@ -149,7 +143,7 @@ async def oauth_token(request: Request) -> Response:
                 client_id,
                 refresh_token=refresh,
                 scope=str(data.get("scope") or "aiva"),
-                resource=str(data.get("resource") or PUBLIC_MCP),
+                resource=PUBLIC_BASE,
             )
         )
     return await token_route(request)
@@ -272,7 +266,16 @@ def save_skill(name: str, content: str) -> dict[str, Any]:
 def _transport_security() -> TransportSecuritySettings:
     configured = [h.strip() for h in os.environ.get("AIVA_ALLOWED_HOSTS", "").split(",") if h.strip()]
     hosts = ["127.0.0.1:*", "localhost:*", "mcp.officeadmin.io"] + configured
-    origins = ["http://127.0.0.1:*", "http://localhost:*", "https://mcp.officeadmin.io"]
+    origins = [
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "https://mcp.officeadmin.io",
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+        "https://platform.openai.com",
+        "https://claude.ai",
+        "https://claude.com",
+    ]
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=hosts,
@@ -280,29 +283,14 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
-class RootMCPAlias:
-    """Route legacy Streamable HTTP requests at / to the canonical /mcp endpoint."""
-
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope.get("path") == "/" and scope.get("method") in {"POST", "GET", "DELETE"}:
-            scope = dict(scope)
-            scope["path"] = "/mcp"
-            scope["raw_path"] = b"/mcp"
-        await self.app(scope, receive, send)
-
-
 def build_app() -> ASGIApp:
-    inner = mcp.streamable_http_app(
+    return mcp.streamable_http_app(
         host=HOST,
-        streamable_http_path="/mcp",
+        streamable_http_path="/",
         json_response=True,
         stateless_http=True,
         transport_security=_transport_security(),
     )
-    return RootMCPAlias(inner)
 
 
 if __name__ == "__main__":
