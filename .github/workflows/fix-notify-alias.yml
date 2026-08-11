@@ -1,0 +1,42 @@
+name: Fix notify from alias
+
+on:
+  push:
+    branches: [chatgpt/fix-notify-from-alias]
+    paths: [.github/workflows/fix-notify-alias.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/fix-notify-from-alias
+          fetch-depth: 0
+      - name: Apply one-line compatibility fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/server.py')
+          s=p.read_text()
+          old='Field(alias="from", description="Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.")'
+          new='Field(validation_alias="from", description="Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.")'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one old notify alias, found {s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+          PY
+          python3 -m py_compile src/server.py
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/server.py
+          git commit -m 'Fix notify from alias dispatch'
+          git push origin HEAD:chatgpt/fix-notify-from-alias
