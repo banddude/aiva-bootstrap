@@ -14,10 +14,30 @@ from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from oauth_compat import (
+
+def _bootstrap_static_token() -> None:
+    if os.environ.get("MCP_TOKEN") or os.environ.get("AIVA_TOKEN"):
+        return
+    token_file = os.environ.get("AIVA_TOKEN_FILE", "")
+    if not token_file:
+        return
+    try:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if token:
+        os.environ["MCP_TOKEN"] = token
+
+
+_bootstrap_static_token()
+
+from oauth_compat import (  # noqa: E402
     PUBLIC_BASE,
     PUBLIC_MCP,
     CompatTokenVerifier,
+    _data,
+    _row,
+    _token_response,
     authorize_route,
     initialize_store,
     metadata_route,
@@ -67,6 +87,7 @@ def _trim(value: str) -> str:
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
+@mcp.custom_route("/health", methods=["GET"])
 async def healthz(_: Request) -> Response:
     return JSONResponse(
         {
@@ -75,6 +96,20 @@ async def healthz(_: Request) -> Response:
             "architecture": "MCP Python SDK v2",
             "protocol": "2026-07-28 dual-era",
         }
+    )
+
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def protected_resource_legacy(_: Request) -> Response:
+    """Legacy Worker-compatible RFC 9728 location for clients configured at the origin."""
+    return JSONResponse(
+        {
+            "resource": PUBLIC_BASE,
+            "authorization_servers": [PUBLIC_BASE],
+            "scopes_supported": ["aiva"],
+            "bearer_methods_supported": ["header"],
+        },
+        headers={"Cache-Control": "public, max-age=300"},
     )
 
 
@@ -100,6 +135,25 @@ async def oauth_authorize(request: Request) -> Response:
 
 @mcp.custom_route("/oauth/token", methods=["POST"])
 async def oauth_token(request: Request) -> Response:
+    # The legacy Worker accepted refresh grants without client_id. Preserve that
+    # behavior because already-connected MCP clients may have stored only the
+    # opaque refresh token.
+    form = await request.form()
+    if str(form.get("grant_type") or "") == "refresh_token":
+        refresh = str(form.get("refresh_token") or "")
+        row = _row("refresh", refresh)
+        data = _data(row)
+        client_id = str(form.get("client_id") or data.get("client_id") or "")
+        if not data or not client_id or str(data.get("client_id") or "") != client_id:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        return JSONResponse(
+            _token_response(
+                client_id,
+                refresh_token=refresh,
+                scope=str(data.get("scope") or "aiva"),
+                resource=str(data.get("resource") or PUBLIC_MCP),
+            )
+        )
     return await token_route(request)
 
 
