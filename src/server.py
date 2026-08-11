@@ -7,12 +7,14 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import uvicorn
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 def _bootstrap_static_token() -> None:
@@ -101,7 +103,6 @@ async def healthz(_: Request) -> Response:
 
 @mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
 async def protected_resource_legacy(_: Request) -> Response:
-    """Legacy Worker-compatible RFC 9728 location for clients configured at the origin."""
     return JSONResponse(
         {
             "resource": PUBLIC_BASE,
@@ -135,9 +136,6 @@ async def oauth_authorize(request: Request) -> Response:
 
 @mcp.custom_route("/oauth/token", methods=["POST"])
 async def oauth_token(request: Request) -> Response:
-    # The legacy Worker accepted refresh grants without client_id. Preserve that
-    # behavior because already-connected MCP clients may have stored only the
-    # opaque refresh token.
     form = await request.form()
     if str(form.get("grant_type") or "") == "refresh_token":
         refresh = str(form.get("refresh_token") or "")
@@ -243,10 +241,7 @@ def write_file(path: str, content: str, create_parent: bool = True) -> dict[str,
 def get_file_base64(path: str) -> dict[str, str]:
     """Fetch a binary file from the user's MCP workspace as base64."""
     target = _inside(WORKSPACE, path)
-    return {
-        "filename": target.name,
-        "base64": base64.b64encode(target.read_bytes()).decode("ascii"),
-    }
+    return {"filename": target.name, "base64": base64.b64encode(target.read_bytes()).decode("ascii")}
 
 
 @mcp.tool()
@@ -285,13 +280,30 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
-if __name__ == "__main__":
-    mcp.run(
-        transport="streamable-http",
+class RootMCPAlias:
+    """Route legacy Streamable HTTP requests at / to the canonical /mcp endpoint."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/" and scope.get("method") in {"POST", "GET", "DELETE"}:
+            scope = dict(scope)
+            scope["path"] = "/mcp"
+            scope["raw_path"] = b"/mcp"
+        await self.app(scope, receive, send)
+
+
+def build_app() -> ASGIApp:
+    inner = mcp.streamable_http_app(
         host=HOST,
-        port=PORT,
         streamable_http_path="/mcp",
-        stateless_http=True,
         json_response=True,
+        stateless_http=True,
         transport_security=_transport_security(),
     )
+    return RootMCPAlias(inner)
+
+
+if __name__ == "__main__":
+    uvicorn.run(build_app(), host=HOST, port=PORT, log_level="info")
