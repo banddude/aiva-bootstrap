@@ -1,34 +1,55 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import platform
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyHttpUrl
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+from oauth_compat import (
+    PUBLIC_BASE,
+    PUBLIC_MCP,
+    CompatTokenVerifier,
+    authorize_route,
+    initialize_store,
+    metadata_route,
+    oauth_counts,
+    register_route,
+    token_route,
+)
 
 HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 WORKSPACE = Path(os.environ.get("AIVA_WORKSPACE", HOME / "workspace")).resolve()
 SKILLS = Path(os.environ.get("AIVA_SKILLS", HOME / "skills")).resolve()
 MAX_OUTPUT = int(os.environ.get("AIVA_MAX_OUTPUT", "200000"))
+HOST = os.environ.get("AIVA_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8765"))
 
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 SKILLS.mkdir(parents=True, exist_ok=True)
+OAUTH_COUNTS_AT_BOOT = initialize_store()
 
-mcp = FastMCP(
+mcp = MCPServer(
     "Personal AIVA Server",
+    version="2.0.0-oracle",
     instructions=(
         "This is the user's own Oracle-hosted computer. Use tools carefully. "
         "Read start-here before personal work. Never expose secrets or credentials."
     ),
-    stateless_http=True,
-    json_response=True,
-    host="0.0.0.0",
-    port=int(os.environ.get("PORT", "8000")),
+    token_verifier=CompatTokenVerifier(),
+    auth=AuthSettings(
+        issuer_url=AnyHttpUrl(PUBLIC_BASE),
+        resource_server_url=AnyHttpUrl(PUBLIC_MCP),
+        required_scopes=["aiva"],
+    ),
 )
 
 
@@ -45,15 +66,55 @@ def _trim(value: str) -> str:
     return value[:MAX_OUTPUT] + f"\n[output limited to {MAX_OUTPUT} characters]"
 
 
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(_: Request) -> Response:
+    return JSONResponse(
+        {
+            "ok": True,
+            "server": "Personal AIVA Server",
+            "architecture": "MCP Python SDK v2",
+            "protocol": "2026-07-28 dual-era",
+        }
+    )
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_metadata_root(request: Request) -> Response:
+    return await metadata_route(request)
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
+async def oauth_metadata_mcp(request: Request) -> Response:
+    return await metadata_route(request)
+
+
+@mcp.custom_route("/oauth/register", methods=["POST"])
+async def oauth_register(request: Request) -> Response:
+    return await register_route(request)
+
+
+@mcp.custom_route("/oauth/authorize", methods=["GET", "POST"])
+async def oauth_authorize(request: Request) -> Response:
+    return await authorize_route(request)
+
+
+@mcp.custom_route("/oauth/token", methods=["POST"])
+async def oauth_token(request: Request) -> Response:
+    return await token_route(request)
+
+
 @mcp.tool()
 def health() -> dict[str, Any]:
-    """Check that the personal MCP server is running."""
+    """Check that the personal MCP server is running and report its MCP architecture."""
     return {
         "ok": True,
         "hostname": platform.node(),
         "platform": platform.platform(),
         "workspace": str(WORKSPACE),
         "skills": str(SKILLS),
+        "mcp_sdk": "2.x",
+        "protocol": "2026-07-28 with legacy compatibility",
+        "oauth_rows": oauth_counts(),
     }
 
 
@@ -79,10 +140,12 @@ def run_command(command: str, cwd: str = ".", timeout_seconds: int = 25) -> dict
             "cwd": str(directory),
         }
     except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         return {
             "exit_code": 124,
-            "stdout": _trim(exc.stdout or ""),
-            "stderr": _trim((exc.stderr or "") + f"\nTimed out after {timeout_seconds}s"),
+            "stdout": _trim(stdout),
+            "stderr": _trim(stderr + f"\nTimed out after {timeout_seconds}s"),
             "cwd": str(directory),
         }
 
@@ -157,5 +220,24 @@ def save_skill(name: str, content: str) -> dict[str, Any]:
     return {"ok": True, "name": safe_name, "path": str(target)}
 
 
+def _transport_security() -> TransportSecuritySettings:
+    configured = [h.strip() for h in os.environ.get("AIVA_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    hosts = ["127.0.0.1:*", "localhost:*", "mcp.officeadmin.io"] + configured
+    origins = ["http://127.0.0.1:*", "http://localhost:*", "https://mcp.officeadmin.io"]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(
+        transport="streamable-http",
+        host=HOST,
+        port=PORT,
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        transport_security=_transport_security(),
+    )
