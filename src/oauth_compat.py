@@ -18,7 +18,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 PUBLIC_BASE = os.environ.get("AIVA_PUBLIC_BASE", "https://mcp.officeadmin.io").rstrip("/")
-PUBLIC_MCP = os.environ.get("AIVA_PUBLIC_MCP", PUBLIC_BASE + "/mcp")
+# Root is the canonical MCP resource. Keep the old name as an internal compatibility alias only.
+PUBLIC_MCP = PUBLIC_BASE
 DB_PATH = Path(os.environ.get("AIVA_OAUTH_DB", "/opt/aiva/state/oauth.sqlite3"))
 IMPORT_PATH = Path(os.environ.get("AIVA_OAUTH_IMPORT", "/opt/aiva/state/legacy-oauth.json"))
 STATIC_TOKEN = os.environ.get("MCP_TOKEN") or os.environ.get("AIVA_TOKEN") or ""
@@ -131,13 +132,14 @@ def _scopes(data: dict[str, Any]) -> list[str]:
         items = [str(s) for s in value if str(s)]
     else:
         items = []
-    return items or ["aiva"]
+    # ChatGPT requests scope="*" for developer MCPs. Treat that as this server's full "aiva" scope.
+    return ["aiva"] if "*" in items else (items or ["aiva"])
 
 
 class CompatTokenVerifier(TokenVerifier):
     async def verify_token(self, token: str) -> AccessToken | None:
         if STATIC_TOKEN and hmac.compare_digest(token, STATIC_TOKEN):
-            return AccessToken(token=token, client_id="aiva-static-admin", scopes=["aiva"], resource=PUBLIC_MCP)
+            return AccessToken(token=token, client_id="aiva-static-admin", scopes=["aiva"], resource=PUBLIC_BASE)
         row = _row("token", token)
         if row is None:
             return None
@@ -147,7 +149,7 @@ class CompatTokenVerifier(TokenVerifier):
             client_id=str(data.get("client_id") or "legacy-oauth-client"),
             scopes=_scopes(data),
             expires_at=row["expires_at"],
-            resource=str(data.get("resource") or PUBLIC_MCP),
+            resource=PUBLIC_BASE,
         )
 
 
@@ -222,14 +224,15 @@ def _authorization_request(query: dict[str, str]) -> tuple[dict[str, Any] | None
     method = query.get("code_challenge_method", "S256")
     if not challenge or method != "S256":
         return None, "invalid_request"
+    requested_scope = (query.get("scope") or "").strip()
     return {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "state": query.get("state"),
         "code_challenge": challenge,
         "code_challenge_method": method,
-        "scope": query.get("scope") or "aiva",
-        "resource": query.get("resource") or PUBLIC_MCP,
+        "scope": "aiva" if requested_scope in {"", "*"} else requested_scope,
+        "resource": PUBLIC_BASE,
     }, None
 
 
@@ -273,7 +276,7 @@ async def authorize_route(request: Request) -> Response:
             "code_challenge": pending["code_challenge"],
             "code_challenge_method": "S256",
             "scope": pending.get("scope") or "aiva",
-            "resource": pending.get("resource") or PUBLIC_MCP,
+            "resource": PUBLIC_BASE,
         },
         int(time.time()) + 300,
     )
@@ -289,7 +292,7 @@ def _pkce_s256(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def _token_response(client_id: str, refresh_token: str | None = None, scope: str = "aiva", resource: str = PUBLIC_MCP) -> dict[str, Any]:
+def _token_response(client_id: str, refresh_token: str | None = None, scope: str = "aiva", resource: str = PUBLIC_BASE) -> dict[str, Any]:
     access = secrets.token_urlsafe(48)
     refresh = refresh_token or secrets.token_urlsafe(48)
     _put("token", access, {"client_id": client_id, "refresh": refresh, "scope": scope, "resource": resource})
@@ -330,7 +333,7 @@ async def token_route(request: Request) -> Response:
             _token_response(
                 client_id,
                 scope=str(data.get("scope") or "aiva"),
-                resource=str(data.get("resource") or PUBLIC_MCP),
+                resource=PUBLIC_BASE,
             )
         )
 
@@ -345,7 +348,7 @@ async def token_route(request: Request) -> Response:
                 client_id,
                 refresh_token=refresh,
                 scope=str(data.get("scope") or "aiva"),
-                resource=str(data.get("resource") or PUBLIC_MCP),
+                resource=PUBLIC_BASE,
             )
         )
 
