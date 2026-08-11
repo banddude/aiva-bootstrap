@@ -1,34 +1,77 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import platform
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+import uvicorn
+from mcp.server import MCPServer
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyHttpUrl
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+def _bootstrap_static_token() -> None:
+    if os.environ.get("MCP_TOKEN") or os.environ.get("AIVA_TOKEN"):
+        return
+    token_file = os.environ.get("AIVA_TOKEN_FILE", "")
+    if not token_file:
+        return
+    try:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if token:
+        os.environ["MCP_TOKEN"] = token
+
+
+_bootstrap_static_token()
+
+from oauth_compat import (  # noqa: E402
+    PUBLIC_BASE,
+    PUBLIC_MCP,
+    CompatTokenVerifier,
+    _data,
+    _row,
+    _token_response,
+    authorize_route,
+    initialize_store,
+    metadata_route,
+    oauth_counts,
+    register_route,
+    token_route,
+)
 
 HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 WORKSPACE = Path(os.environ.get("AIVA_WORKSPACE", HOME / "workspace")).resolve()
 SKILLS = Path(os.environ.get("AIVA_SKILLS", HOME / "skills")).resolve()
 MAX_OUTPUT = int(os.environ.get("AIVA_MAX_OUTPUT", "200000"))
+HOST = os.environ.get("AIVA_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8765"))
 
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 SKILLS.mkdir(parents=True, exist_ok=True)
+OAUTH_COUNTS_AT_BOOT = initialize_store()
 
-mcp = FastMCP(
+mcp = MCPServer(
     "Personal AIVA Server",
+    version="2.0.0-oracle",
     instructions=(
         "This is the user's own Oracle-hosted computer. Use tools carefully. "
         "Read start-here before personal work. Never expose secrets or credentials."
     ),
-    stateless_http=True,
-    json_response=True,
-    host="0.0.0.0",
-    port=int(os.environ.get("PORT", "8000")),
+    token_verifier=CompatTokenVerifier(),
+    auth=AuthSettings(
+        issuer_url=AnyHttpUrl(PUBLIC_BASE),
+        resource_server_url=AnyHttpUrl(PUBLIC_MCP),
+        required_scopes=["aiva"],
+    ),
 )
 
 
@@ -45,15 +88,85 @@ def _trim(value: str) -> str:
     return value[:MAX_OUTPUT] + f"\n[output limited to {MAX_OUTPUT} characters]"
 
 
+@mcp.custom_route("/healthz", methods=["GET"])
+@mcp.custom_route("/health", methods=["GET"])
+async def healthz(_: Request) -> Response:
+    return JSONResponse(
+        {
+            "ok": True,
+            "server": "Personal AIVA Server",
+            "architecture": "MCP Python SDK v2",
+            "protocol": "2026-07-28 dual-era",
+        }
+    )
+
+
+@mcp.custom_route("/.well-known/oauth-protected-resource", methods=["GET"])
+async def protected_resource_legacy(_: Request) -> Response:
+    return JSONResponse(
+        {
+            "resource": PUBLIC_BASE,
+            "authorization_servers": [PUBLIC_BASE],
+            "scopes_supported": ["aiva"],
+            "bearer_methods_supported": ["header"],
+        },
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+async def oauth_metadata_root(request: Request) -> Response:
+    return await metadata_route(request)
+
+
+@mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
+async def oauth_metadata_mcp(request: Request) -> Response:
+    return await metadata_route(request)
+
+
+@mcp.custom_route("/oauth/register", methods=["POST"])
+async def oauth_register(request: Request) -> Response:
+    return await register_route(request)
+
+
+@mcp.custom_route("/oauth/authorize", methods=["GET", "POST"])
+async def oauth_authorize(request: Request) -> Response:
+    return await authorize_route(request)
+
+
+@mcp.custom_route("/oauth/token", methods=["POST"])
+async def oauth_token(request: Request) -> Response:
+    form = await request.form()
+    if str(form.get("grant_type") or "") == "refresh_token":
+        refresh = str(form.get("refresh_token") or "")
+        row = _row("refresh", refresh)
+        data = _data(row)
+        client_id = str(form.get("client_id") or data.get("client_id") or "")
+        if not data or not client_id or str(data.get("client_id") or "") != client_id:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        return JSONResponse(
+            _token_response(
+                client_id,
+                refresh_token=refresh,
+                scope=str(data.get("scope") or "aiva"),
+                resource=str(data.get("resource") or PUBLIC_MCP),
+            )
+        )
+    return await token_route(request)
+
+
 @mcp.tool()
 def health() -> dict[str, Any]:
-    """Check that the personal MCP server is running."""
+    """Check that the personal MCP server is running and report its MCP architecture."""
     return {
         "ok": True,
         "hostname": platform.node(),
         "platform": platform.platform(),
         "workspace": str(WORKSPACE),
         "skills": str(SKILLS),
+        "mcp_sdk": "2.x",
+        "protocol": "2026-07-28 with legacy compatibility",
+        "oauth_rows": oauth_counts(),
     }
 
 
@@ -79,10 +192,12 @@ def run_command(command: str, cwd: str = ".", timeout_seconds: int = 25) -> dict
             "cwd": str(directory),
         }
     except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         return {
             "exit_code": 124,
-            "stdout": _trim(exc.stdout or ""),
-            "stderr": _trim((exc.stderr or "") + f"\nTimed out after {timeout_seconds}s"),
+            "stdout": _trim(stdout),
+            "stderr": _trim(stderr + f"\nTimed out after {timeout_seconds}s"),
             "cwd": str(directory),
         }
 
@@ -126,10 +241,7 @@ def write_file(path: str, content: str, create_parent: bool = True) -> dict[str,
 def get_file_base64(path: str) -> dict[str, str]:
     """Fetch a binary file from the user's MCP workspace as base64."""
     target = _inside(WORKSPACE, path)
-    return {
-        "filename": target.name,
-        "base64": base64.b64encode(target.read_bytes()).decode("ascii"),
-    }
+    return {"filename": target.name, "base64": base64.b64encode(target.read_bytes()).decode("ascii")}
 
 
 @mcp.tool()
@@ -157,5 +269,41 @@ def save_skill(name: str, content: str) -> dict[str, Any]:
     return {"ok": True, "name": safe_name, "path": str(target)}
 
 
+def _transport_security() -> TransportSecuritySettings:
+    configured = [h.strip() for h in os.environ.get("AIVA_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    hosts = ["127.0.0.1:*", "localhost:*", "mcp.officeadmin.io"] + configured
+    origins = ["http://127.0.0.1:*", "http://localhost:*", "https://mcp.officeadmin.io"]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
+
+
+class RootMCPAlias:
+    """Route legacy Streamable HTTP requests at / to the canonical /mcp endpoint."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/" and scope.get("method") in {"POST", "GET", "DELETE"}:
+            scope = dict(scope)
+            scope["path"] = "/mcp"
+            scope["raw_path"] = b"/mcp"
+        await self.app(scope, receive, send)
+
+
+def build_app() -> ASGIApp:
+    inner = mcp.streamable_http_app(
+        host=HOST,
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        transport_security=_transport_security(),
+    )
+    return RootMCPAlias(inner)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    uvicorn.run(build_app(), host=HOST, port=PORT, log_level="info")
