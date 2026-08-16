@@ -1,0 +1,15 @@
+# Lean, explicit rule set: correctness and consistency, not opinion.
+# E/F (pycodestyle errors + pyflakes), I (import order), UP (pyupgrade), W.
+# Deliberate design choices this repo makes that broader rule sets would
+# fight (blind catches that keep socket loops alive, noqa on post-bootstrap
+# imports) are simply out of scope rather than suppressed one by one.
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[lint]
+select = ["E", "F", "I", "UP", "W"]
+ignore = [
+    # Tool descriptions are copied verbatim from the Cloudflare Worker contract
+    # (contract/worker-tools.json); re-wrapping them would drift the contract.
+    "E501",
+]

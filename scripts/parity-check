@@ -1,17 +1,100 @@
 #!/usr/bin/env python3
+"""Prove the Oracle MCP server's tool contract matches the Cloudflare Worker's.
+
+Parity is measured on NAMES and INPUT SCHEMAS, exactly, against the checked-in
+reference contract (contract/worker-tools.json), which is generated from the
+live Worker and pinned by a sha256 (contract/worker-tools.SHA256). The server
+loads that same file at startup, so the gate closes the loop:
+
+  file (pinned)  ==  what the server advertises  ==  what clients bind to
+
+Because the server reads the file, a hand edit of the file would otherwise
+move both sides together and pass silently (the exact self-consistent pass
+this gate exists to prevent). The pin closes that hole: changing the contract
+without regenerating the pin is a red gate in CI.
+
+Modes:
+  default            Verify the pin, then boot this repo's server in-process
+                     (isolated env, no network) and verify advertised tools ==
+                     contract file. This is the CI gate. It never touches
+                     Cloudflare, so it cannot pass by asking the Worker.
+  --oracle-url URL   Instead of booting in-process, fetch tools/list from a
+                     RUNNING server over HTTP (e.g. the production Oracle).
+  --live [URL...]    Also fetch the live Worker's tools/list and require the
+                     contract file to still match it (staleness gate). Checks
+                     every URL given; defaults to both known production routes,
+                     which must also agree with each other (split-deploy
+                     detection). Requires AIVA_MCP_TOKEN or --token-file. The
+                     token is never printed, logged, or written anywhere.
+  --refresh          Fetch the live Worker contract and REGENERATE the contract
+                     file and its pin. The only supported way to change the
+                     contract. Refuses when the Worker is unreachable or its
+                     routes disagree. Run it, commit BOTH files together.
+
+Exit codes: 0 parity holds; 1 parity broken, the pin does not match, or a
+needed endpoint was unreachable (a check that cannot run is a failed check,
+not a skipped one); 2 usage error.
+
+Built for the Cloudflare-removal transition. When the Worker is retired,
+retire --live and --refresh with it; the contract file becomes the sole truth
+and the pin becomes its integrity record.
+"""
+
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 import json
 import os
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-from tool_contract import WORKER_TOOL_SCHEMAS
+CONTRACT_PATH = ROOT / "contract" / "worker-tools.json"
+CONTRACT_PIN_PATH = ROOT / "contract" / "worker-tools.SHA256"
+DEFAULT_LIVE_URLS = [
+    "https://aiva-mcp.mikejshaffer.workers.dev",
+    "https://mcp.officeadmin.io",
+]
+
+
+# --- contract file -------------------------------------------------------------
+
+
+def canonical_tools_json(tools: dict[str, dict[str, Any]]) -> bytes:
+    return json.dumps(tools, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def load_contract_file() -> dict[str, dict[str, Any]]:
+    data = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    return data["tools"]
+
+
+def load_contract() -> dict[str, dict[str, Any]]:
+    return {name: spec["inputSchema"] for name, spec in load_contract_file().items()}
+
+
+def verify_pin() -> str | None:
+    """None if the pin matches the contract file; else a human-readable problem."""
+    digest = hashlib.sha256(canonical_tools_json(load_contract_file())).hexdigest()
+    try:
+        pinned = CONTRACT_PIN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return f"{CONTRACT_PIN_PATH.name} is missing; run scripts/parity-check --refresh"
+    if pinned != digest:
+        return (
+            f"{CONTRACT_PATH.name} changed without its pin (pinned={pinned[:16]}..., "
+            f"actual={digest[:16]}...). If the Worker contract really changed, regenerate "
+            "BOTH files with: scripts/parity-check --refresh"
+        )
+    return None
+
+
+# --- wire fetch ----------------------------------------------------------------
 
 
 def _rpc(url: str, token: str) -> dict[str, Any]:
@@ -23,47 +106,209 @@ def _rpc(url: str, token: str) -> dict[str, Any]:
     request.add_header("Authorization", f"Bearer {token}")
     request.add_header("Content-Type", "application/json")
     request.add_header("Accept", "application/json, text/event-stream")
-    request.add_header("User-Agent", "aiva-mcp-parity-check")
-    with urllib.request.urlopen(request, timeout=15) as response:
-        raw = response.read().decode()
-    if raw.startswith("event:"):
+    request.add_header("User-Agent", "aiva-parity-check")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    if raw.lstrip().startswith("event:"):
         raw = "\n".join(line[6:] for line in raw.splitlines() if line.startswith("data: "))
-    return json.loads(raw)
+    payload = json.loads(raw)
+    if "error" in payload:
+        raise RuntimeError(f"tools/list error from {url}: {payload['error']}")
+    return payload
 
 
-def _tools(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {tool["name"]: tool["inputSchema"] for tool in payload.get("result", {}).get("tools", [])}
+def fetch_schemas(url: str, token: str) -> dict[str, dict[str, Any]]:
+    tools = _rpc(url, token).get("result", {}).get("tools", [])
+    return {t["name"]: t["inputSchema"] for t in tools}
 
 
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--oracle-url", required=True)
-    parser.add_argument("--worker-url", default="https://aiva-mcp.mikejshaffer.workers.dev")
-    parser.add_argument("--token-file", default="/home/ubuntu/.aiva/agent/token")
+def fetch_full_tools(url: str, token: str) -> dict[str, dict[str, Any]]:
+    tools = _rpc(url, token).get("result", {}).get("tools", [])
+    return {t["name"]: {"description": t.get("description", ""), "inputSchema": t["inputSchema"]} for t in tools}
+
+
+def diff_contract(advertised: dict[str, dict[str, Any]], contract: dict[str, dict[str, Any]]) -> list[str]:
+    problems: list[str] = []
+    for name in sorted(set(advertised) | set(contract)):
+        if name not in advertised:
+            problems.append(f"{name}: in the contract but NOT advertised")
+            continue
+        if name not in contract:
+            problems.append(f"{name}: advertised but NOT in the contract")
+            continue
+        if advertised[name] != contract[name]:
+            problems.append(f"{name}: inputSchema differs from the contract")
+    return problems
+
+
+# --- local boot ----------------------------------------------------------------
+
+
+async def boot_local_tools() -> dict[str, dict[str, Any]]:
+    """Import this repo's server in an ISOLATED environment and read its
+    advertised tools the same way the transport serializes them."""
+    tmp = tempfile.mkdtemp(prefix="parity-")
+    env_backup = dict(os.environ)
+    try:
+        os.environ.update(
+            {
+                "AIVA_MCP_URL": "http://127.0.0.1:9",  # never reach for the Worker here
+                "MCP_TOKEN": "parity-check-token",
+                "AIVA_HOME": os.path.join(tmp, "home"),
+                "AIVA_STATE": os.path.join(tmp, "state"),
+                "AIVA_OAUTH_DB": os.path.join(tmp, "oauth.sqlite3"),
+                "AIVA_OAUTH_IMPORT": os.path.join(tmp, "no-import.json"),
+                "AIVA_PUBLIC_BASE": "http://127.0.0.1:9",
+                "AIVA_HOST": "127.0.0.1",
+                "AIVA_TOOL_CONTRACT": str(CONTRACT_PATH),
+            }
+        )
+        sys.path.insert(0, str(ROOT / "src"))
+        import server  # noqa: PLC0415
+
+        tools = await server.mcp.list_tools()
+        return {t.name: t.input_schema for t in tools}
+    finally:
+        os.environ.clear()
+        os.environ.update(env_backup)
+        if str(ROOT / "src") in sys.path:
+            sys.path.remove(str(ROOT / "src"))
+        sys.modules.pop("server", None)
+
+
+def _resolve_token(args: argparse.Namespace, purpose: str) -> str:
+    token = os.environ.get("AIVA_MCP_TOKEN", "")
+    if token:
+        return token
+    try:
+        return Path(args.token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        print(f"parity-check: FAILED: {purpose} needs a token (AIVA_MCP_TOKEN or --token-file); none found")
+        return ""
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="parity-check")
+    parser.add_argument("--oracle-url", help="check a RUNNING Oracle server over HTTP instead of booting in-process")
+    parser.add_argument("--live", nargs="*", default=None, metavar="URL",
+                        help="also verify the contract file against the live Worker (defaults to both known routes)")
+    parser.add_argument("--refresh", action="store_true",
+                        help="fetch the live Worker contract and REGENERATE contract/worker-tools.json "
+                        "and its hash pin; the only supported way to change the contract")
+    parser.add_argument("--token-file", default=os.path.expanduser("~/.aiva/agent/token"))
     args = parser.parse_args(argv)
-    token = os.environ.get("AIVA_MCP_TOKEN") or Path(args.token_file).read_text(encoding="utf-8").strip()
-    worker = _tools(_rpc(args.worker_url, token))
-    oracle = _tools(_rpc(args.oracle_url, token))
-    expected = WORKER_TOOL_SCHEMAS
-    summary = {
-        "worker_tool_count": len(worker),
-        "oracle_tool_count": len(oracle),
-        "expected_tool_count": len(expected),
-        "worker_matches_expected": worker == expected,
-        "oracle_matches_worker": oracle == worker,
-        "worker_names": sorted(worker),
-        "oracle_names": sorted(oracle),
-    }
-    print(json.dumps(summary, indent=2, sort_keys=True))
-    if not summary["worker_matches_expected"]:
-        print("parity-check: FAILED: checked-in Worker contract is stale")
+
+    failures: list[str] = []
+
+    # --- refresh: regenerate the contract from the live Worker -----------------
+    if args.refresh:
+        urls = args.live or DEFAULT_LIVE_URLS
+        token = _resolve_token(args, "--refresh")
+        if not token:
+            return 1
+        fetched: dict[str, dict[str, dict[str, Any]]] = {}
+        for url in urls:
+            try:
+                fetched[url] = fetch_full_tools(url, token)
+            except Exception as exc:  # noqa: BLE001
+                print(f"parity-check: FAILED: worker[{url}] unreachable: {exc}")
+                return 1
+        schemas = {url: {n: s["inputSchema"] for n, s in t.items()} for url, t in fetched.items()}
+        if len({json.dumps(s, sort_keys=True) for s in schemas.values()}) != 1:
+            print("parity-check: FAILED: live Worker routes disagree with each other; "
+                  "refusing to refresh the contract from a split deploy")
+            return 1
+        tools = fetched[urls[0]]
+        provenance = {
+            "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker.",
+            "refreshed_from": ", ".join(urls),
+            "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
+            "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema "
+            "exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
+            "rule": "This file is GENERATED. Never edit it by hand. Regenerate with "
+            "scripts/parity-check --refresh, only when the Worker contract really changed, "
+            "and commit the file and its pin together.",
+        }
+        CONTRACT_PATH.write_text(
+            json.dumps({"_provenance": provenance, "tools": tools}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        CONTRACT_PIN_PATH.write_text(hashlib.sha256(canonical_tools_json(tools)).hexdigest() + "\n", encoding="utf-8")
+        print(f"parity-check: refreshed contract/worker-tools.json and its pin from {urls[0]} ({len(tools)} tools)")
+        return 0
+
+    # --- pin: the file must be the generated one, not hand-edited --------------
+    pin_problem = verify_pin()
+    if pin_problem:
+        failures.append(pin_problem)
+        print(f"parity-check: PIN FAILED: {pin_problem}")
+    contract = load_contract()
+
+    # --- the server under test -------------------------------------------------
+    if args.oracle_url:
+        token = _resolve_token(args, "--oracle-url")
+        if not token:
+            return 1
+        try:
+            advertised = fetch_schemas(args.oracle_url, token)
+        except Exception as exc:  # noqa: BLE001 - any failure is a failed check
+            print(f"parity-check: FAILED: could not fetch tools/list from {args.oracle_url}: {exc}")
+            return 1
+    else:
+        try:
+            advertised = asyncio.run(boot_local_tools())
+        except Exception as exc:  # noqa: BLE001
+            print(f"parity-check: FAILED: could not boot this repo's server: {exc}")
+            return 1
+
+    problems = diff_contract(advertised, contract)
+    source = args.oracle_url or "in-process boot of this repo's server"
+    print(json.dumps({
+        "checked": source,
+        "advertised_tool_count": len(advertised),
+        "contract_tool_count": len(contract),
+        "pin_ok": pin_problem is None,
+        "oracle_matches_contract": not problems,
+    }, indent=2, sort_keys=True))
+    if problems:
+        failures.extend(f"oracle[{source}]: {p}" for p in problems)
+
+    # --- the live Worker (staleness gate) --------------------------------------
+    if args.live is not None:
+        urls = args.live or DEFAULT_LIVE_URLS
+        token = _resolve_token(args, "--live")
+        if not token:
+            return 1
+        live_schemas: dict[str, dict[str, dict[str, Any]]] = {}
+        for url in urls:
+            try:
+                live_schemas[url] = fetch_schemas(url, token)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"worker[{url}]: UNREACHABLE or errored: {exc}")
+                print(f"parity-check: worker[{url}]: UNREACHABLE: {exc}")
+                continue
+            live_problems = diff_contract(live_schemas[url], contract)
+            status = "matches contract" if not live_problems else f"DIFFERS ({len(live_problems)} problem(s))"
+            print(f"parity-check: worker[{url}] tools={len(live_schemas[url])}: {status}")
+            if live_problems:
+                failures.extend(f"worker[{url}]: {p}" for p in live_problems)
+        # split-brain detection: the routes must agree with each other too
+        distinct = {json.dumps(v, sort_keys=True) for v in live_schemas.values()}
+        if len(live_schemas) >= 2 and len(distinct) > 1:
+            failures.append(
+                "worker: LIVE ROUTES DISAGREE WITH EACH OTHER ("
+                + ", ".join(sorted(live_schemas))
+                + ") - a split deploy; every client must see one contract"
+            )
+
+    if failures:
+        print("parity-check: FAILED")
+        for f in failures:
+            print(f"  - {f}")
         return 1
-    if not summary["oracle_matches_worker"]:
-        print("parity-check: FAILED: Oracle names or input schemas differ from Worker")
-        return 1
-    print("parity-check: OK: Oracle names and input schemas match the live Worker")
+    print("parity-check: OK: pin holds; names and input schemas match the contract")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

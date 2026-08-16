@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check src tests scripts
+
+      - name: Type check (mypy)
+        run: mypy src --ignore-missing-imports
+
+      # The real suite: boots this repo's server on an ephemeral port, connects
+      # a protocol-faithful machine agent over a real WebSocket, and drives all
+      # twelve tools over real MCP HTTP with AIVA_MCP_URL pointed at a dead
+      # address (127.0.0.1:9), so nothing can pass via Cloudflare.
+      - name: Tests (real server, real WebSocket machine, dead Worker URL)
+        run: python -m pytest tests -v
+
+      # Gate: advertised tool names + input schemas must match the checked-in
+      # Worker contract exactly (contract/worker-tools.json). Offline on
+      # purpose; freshness vs the live Worker is scripts/parity-check --live,
+      # run where a token exists.
+      - name: Tool contract parity gate
+        run: python scripts/parity-check

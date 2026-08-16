@@ -1,0 +1,341 @@
+{
+  "_provenance": {
+    "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
+    "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
+    "refreshed_from": "https://aiva-mcp.mikejshaffer.workers.dev, https://mcp.officeadmin.io",
+    "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh, only when the Worker contract really changed, and commit the file and its pin together.",
+    "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker."
+  },
+  "tools": {
+    "get_file": {
+      "description": "Fetch a file (including binary) from the chosen machine, returned as base64.",
+      "inputSchema": {
+        "properties": {
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "get_skill": {
+      "description": "Get the full content of a named AIVA skill from the chosen machine.",
+      "inputSchema": {
+        "properties": {
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "skill_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "skill_name"
+        ],
+        "type": "object"
+      }
+    },
+    "inspect_machine": {
+      "description": "Read-only inspection of a machine: where am I, what is here, what is in it, what is this host running. Runs ONE allowlisted reporting command (pwd, ls, cat, head, grep, stat, df, ps, uname, git status, git log, gh auth status, gh pr list, wrangler whoami, systemctl status, launchctl list, tailscale status, and similar). Cannot change state: the command is checked against the allowlist before it starts, and its tokens never reach a shell, so pipes, redirects, substitutions and globs are refused rather than interpreted. Anything outside the set returns refused: true having run nothing; use run_command for it. Times out at timeout_seconds (default 10, max 25).",
+      "inputSchema": {
+        "properties": {
+          "argv": {
+            "description": "The same command pre-split into tokens, e.g. [\"grep\", \"-n\", \"two words\", \"file.txt\"]. Use this instead of command when an argument contains spaces or characters that the string form refuses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "The command as one string, e.g. 'git status --short'. Quotes group and a backslash escapes, but nothing is expanded or substituted.",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "Directory to run in. Defaults to the home directory.",
+            "type": "string"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "description": "Seconds to wait. Default 10, max 25.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "type": "object"
+      }
+    },
+    "job_result": {
+      "description": "Fetch the result of a run_command_async job by its job_id. Returns {status:'running', elapsed_sec} if not finished yet (poll again), or {status:'done', result} with the output. The result is consumed once delivered.",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    "list_directory": {
+      "description": "List a directory tree on the chosen machine, to an optional depth.",
+      "inputSchema": {
+        "properties": {
+          "depth": {
+            "description": "Default 2.",
+            "type": "number"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Defaults to the home directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "type": "object"
+      }
+    },
+    "list_skills": {
+      "description": "List the available AIVA skills on the chosen machine.",
+      "inputSchema": {
+        "properties": {
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "type": "object"
+      }
+    },
+    "notify": {
+      "description": "Send a notification to AIVA or to Mike. Takes no machine: delivery happens in the cloud, so it works even when every machine is asleep. target 'aiva' pushes the message into the AIVA session inbox, and that is where routine status, progress, and finished background work belong. target 'mike' sends a REAL iMessage to Mike Shaffer's personal phone, so use it only for something he needs to see right now, such as work that is blocked on his decision, and never for routine status. target 'all' sends both. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "description": "Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The notification text. Write it so it stands alone, because the reader has none of your context.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Who to notify. 'aiva' is the AIVA session inbox and is the right choice for anything routine. 'mike' texts a real person's phone, so reserve it for something he needs to see right now. 'all' sends to both.",
+            "enum": [
+              "aiva",
+              "mike",
+              "all"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "read_file": {
+      "description": "Read a UTF-8 text file from the chosen machine. Optional line offset/limit.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "type": "number"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "run_command": {
+      "description": "Run a shell command on the chosen machine (synchronous: waits for the result). Returns stdout, stderr, exit code. Times out at timeout_seconds (default 10, max 25); the timeout response tells you how to extend or go async.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "description": "Seconds to wait. Default 10, max 25 for a synchronous call. For longer commands use run_command_async.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "machine",
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "run_command_async": {
+      "description": "Run a long shell command on the chosen machine in the BACKGROUND. Returns a job_id immediately (does not wait). Then poll job_result with that job_id to get the output. Use this for anything that may run longer than 25 seconds (builds, installs, long scripts).",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "description": "Max seconds the command may run before it's killed. Default 10, max 600.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "machine",
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "send_file": {
+      "description": "Write a file to the chosen machine from base64 content. Set overwrite to replace an existing file.",
+      "inputSchema": {
+        "properties": {
+          "content_base64": {
+            "type": "string"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path",
+          "content_base64"
+        ],
+        "type": "object"
+      }
+    },
+    "write_file": {
+      "description": "Write a UTF-8 text file on the chosen machine. mode: rewrite (default) or append.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "rewrite",
+              "append"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}
