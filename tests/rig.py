@@ -35,24 +35,32 @@ STUB_INSPECT_ALLOWLIST = {
     "pwd", "ls", "cat", "echo", "uname", "hostname", "whoami", "date",
     "true", "wc", "head", "stat",
 }
-def _sandboxed(sandbox: Path, path: str | None) -> Path:
-    """Resolve a tool path the way agent.js's expand() does, then jail it."""
+def _sandboxed(sandbox: Path, path: str | None, extra_roots: tuple[Path, ...] = ()) -> Path:
+    """Resolve a tool path the way agent.js's expand() does, then jail it.
+
+    The jail is the rig's own safety property (production agent.js has none).
+    Besides the sandbox home, the server's configured CAO spool dirs are
+    approved roots: notify delivery legitimately writes there via a machine
+    write_file dispatch, and those dirs are rig-controlled tmp paths.
+    """
     p = Path(path or ".")
     if not p.is_absolute():
         p = sandbox / p
     resolved = p.resolve()
-    sandbox_resolved = sandbox.resolve()
-    if resolved != sandbox_resolved and sandbox_resolved not in resolved.parents:
-        raise PermissionError(f"path escapes the test sandbox: {path}")
-    return resolved
+    roots = [sandbox.resolve()] + [r.resolve() for r in extra_roots]
+    for root in roots:
+        if resolved == root or root in resolved.parents:
+            return resolved
+    raise PermissionError(f"path escapes the test sandbox: {path}")
 
 
 class StubMachineAgent:
     """A real WebSocket machine agent (protocol-faithful, sandbox-executing)."""
 
-    def __init__(self, uri: str, sandbox: Path) -> None:
+    def __init__(self, uri: str, sandbox: Path, extra_roots: tuple[Path, ...] = ()) -> None:
         self.uri = uri
         self.sandbox = sandbox
+        self.extra_roots = extra_roots
         self.ws: Any = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._reader: asyncio.Task[None] | None = None
@@ -106,7 +114,7 @@ class StubMachineAgent:
         env = {"HOME": str(self.sandbox), "PATH": "/usr/bin:/bin"}
         proc = await asyncio.create_subprocess_exec(
             "/bin/bash", "-c", a.get("command") or "",
-            cwd=str(_sandboxed(self.sandbox, a.get("cwd"))),
+            cwd=str(_sandboxed(self.sandbox, a.get("cwd"), self.extra_roots)),
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -148,7 +156,7 @@ class StubMachineAgent:
         env = {"HOME": str(self.sandbox), "PATH": "/usr/bin:/bin"}
         proc = await asyncio.create_subprocess_exec(
             "/bin/bash", "-c", 'exec "$@"', "aiva-inspect", *argv,
-            cwd=str(_sandboxed(self.sandbox, a.get("cwd"))),
+            cwd=str(_sandboxed(self.sandbox, a.get("cwd"), self.extra_roots)),
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -163,7 +171,7 @@ class StubMachineAgent:
         }
 
     async def _tool_read_file(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = _sandboxed(self.sandbox, a.get("path"))
+        p = _sandboxed(self.sandbox, a.get("path"), self.extra_roots)
         content = p.read_text(encoding="utf-8")
         if a.get("offset") or a.get("limit"):
             lines = content.split("\n")
@@ -172,7 +180,7 @@ class StubMachineAgent:
         return {"ok": True, "path": str(p), "content": content}
 
     async def _tool_write_file(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = _sandboxed(self.sandbox, a.get("path"))
+        p = _sandboxed(self.sandbox, a.get("path"), self.extra_roots)
         p.parent.mkdir(parents=True, exist_ok=True)
         data = a.get("content") or ""
         if (a.get("mode") or "rewrite") == "append":
@@ -183,7 +191,7 @@ class StubMachineAgent:
         return {"ok": True, "path": str(p), "bytes": len(data.encode("utf-8"))}
 
     async def _tool_list_directory(self, a: dict[str, Any]) -> dict[str, Any]:
-        root = _sandboxed(self.sandbox, a.get("path") or ".")
+        root = _sandboxed(self.sandbox, a.get("path") or ".", self.extra_roots)
         depth = 2 if a.get("depth") is None else int(a["depth"])
         out: list[str] = []
 
@@ -225,12 +233,12 @@ class StubMachineAgent:
         return {"ok": False, "error": f"skill '{name}' not found"}
 
     async def _tool_get_file(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = _sandboxed(self.sandbox, a.get("path"))
+        p = _sandboxed(self.sandbox, a.get("path"), self.extra_roots)
         data = p.read_bytes()
         return {"ok": True, "path": str(p), "bytes": len(data), "content_base64": base64.b64encode(data).decode()}
 
     async def _tool_send_file(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = _sandboxed(self.sandbox, a.get("path"))
+        p = _sandboxed(self.sandbox, a.get("path"), self.extra_roots)
         if p.exists() and not a.get("overwrite"):
             return {"ok": False, "error": "file exists; set overwrite:true to replace"}
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -356,7 +364,14 @@ class Rig:
 
     async def connect_machine(self) -> StubMachineAgent:
         assert self.agent is None
-        self.agent = StubMachineAgent(self.server.agent_uri(os.environ["MCP_TOKEN"]), self.sandbox)
+        self.agent = StubMachineAgent(
+            self.server.agent_uri(os.environ["MCP_TOKEN"]),
+            self.sandbox,
+            extra_roots=(
+                Path(os.environ["AIVA_CAO_BRIDGE_STATE_DIR"]),
+                Path(os.environ["AIVA_CAO_DEV_BRIDGE_STATE_DIR"]),
+            ),
+        )
         await self.agent.start()
         # the hub registers the socket on accept; give the event loop a beat
         for _ in range(50):
