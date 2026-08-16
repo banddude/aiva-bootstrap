@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -34,8 +33,9 @@ def _bootstrap_static_token() -> None:
 
 _bootstrap_static_token()
 
-from agent_hub import AgentHub  # noqa: E402
-from oauth_compat import (  # noqa: E402
+from agent_hub import AgentHub
+from notify_delivery import make_spool_record, send_mike, summarize
+from oauth_compat import (
     PUBLIC_BASE,
     STATIC_TOKEN,
     CompatTokenVerifier,
@@ -45,10 +45,10 @@ from oauth_compat import (  # noqa: E402
     authorize_route,
     initialize_store,
     metadata_route,
-    oauth_counts,
     register_route,
     token_route,
 )
+from tool_contract import WORKER_TOOL_SCHEMAS
 
 HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 STATE = Path(os.environ.get("AIVA_STATE", HOME / "state")).resolve()
@@ -60,21 +60,21 @@ OAUTH_COUNTS_AT_BOOT = initialize_store()
 AGENT_HUB = AgentHub(token=STATIC_TOKEN, state_dir=STATE)
 
 READ_ONLY = ToolAnnotations(
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
 )
 WRITE_DESTRUCTIVE = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=False,
-    openWorldHint=True,
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
 )
 
 Machine = Annotated[
     Literal["laptop", "oracle", "mac-server"],
-    Field(description="Which machine to run on: laptop, oracle, or mac-server. Defaults to oracle."),
+    Field(description="Which machine to run on: laptop, oracle, or mac-server."),
 ]
 SyncTimeout = Annotated[
     float | None,
@@ -95,8 +95,8 @@ mcp = MCPServer(
     instructions=(
         "AIVA tools for Mike Shaffer. Before performing tasks, call get_skill with "
         "skill_name=start-here to establish identity, operating rules, and routing. Then use "
-        "list_skills/get_skill for relevant domain skills. Machine-backed tools default to oracle; "
-        "set machine=laptop or machine=mac-server only when another host is needed. If a machine "
+        "list_skills/get_skill for relevant domain skills. Machine-backed tools require an explicit machine. "
+        "Set machine=oracle, laptop, or mac-server for each machine-backed call. If a machine "
         "is offline, the call returns not connected. To read the state of a machine, use "
         "inspect_machine; run_command is a full shell. The notify tool takes no machine."
     ),
@@ -175,7 +175,7 @@ async def oauth_token(request: Request) -> Response:
 def _result(result: Any) -> CallToolResult:
     text = result if isinstance(result, str) else json.dumps(result, indent=2)
     is_error = bool(isinstance(result, dict) and result.get("ok") is False)
-    return CallToolResult(content=[TextContent(type="text", text=text)], isError=is_error)
+    return CallToolResult(content=[TextContent(type="text", text=text)], is_error=is_error)
 
 
 def _clean_args(**kwargs: Any) -> dict[str, Any]:
@@ -212,7 +212,7 @@ async def _dispatch_sync(machine: str, tool: str, args: dict[str, Any]) -> CallT
     annotations=WRITE_DESTRUCTIVE,
     structured_output=False,
 )
-async def run_command(*, machine: Machine = "oracle", command: str, timeout_seconds: SyncTimeout = None) -> CallToolResult:
+async def run_command(*, machine: Machine, command: str, timeout_seconds: SyncTimeout = None) -> CallToolResult:
     return await _dispatch_sync(machine, "run_command", _clean_args(command=command, timeout_seconds=timeout_seconds))
 
 
@@ -223,7 +223,7 @@ async def run_command(*, machine: Machine = "oracle", command: str, timeout_seco
 )
 async def inspect_machine(
     *,
-    machine: Machine = "oracle",
+    machine: Machine,
     command: Annotated[str | None, Field(description="The command as one string, e.g. 'git status --short'. Quotes group and a backslash escapes, but nothing is expanded or substituted.")] = None,
     argv: Annotated[list[str] | None, Field(description='The same command pre-split into tokens, e.g. ["grep", "-n", "two words", "file.txt"]. Use this instead of command when an argument contains spaces or characters that the string form refuses.')] = None,
     cwd: Annotated[str | None, Field(description="Directory to run in. Defaults to the home directory.")] = None,
@@ -241,7 +241,7 @@ async def inspect_machine(
     annotations=WRITE_DESTRUCTIVE,
     structured_output=False,
 )
-async def run_command_async(*, machine: Machine = "oracle", command: str, timeout_seconds: AsyncTimeout = None) -> CallToolResult:
+async def run_command_async(*, machine: Machine, command: str, timeout_seconds: AsyncTimeout = None) -> CallToolResult:
     result = await AGENT_HUB.dispatch_async(
         machine,
         "run_command",
@@ -264,7 +264,7 @@ def job_result(job_id: str) -> CallToolResult:
     annotations=READ_ONLY,
     structured_output=False,
 )
-async def read_file(*, machine: Machine = "oracle", path: str, offset: float | None = None, limit: float | None = None) -> CallToolResult:
+async def read_file(*, machine: Machine, path: str, offset: float | None = None, limit: float | None = None) -> CallToolResult:
     return await _dispatch_sync(machine, "read_file", _clean_args(path=path, offset=offset, limit=limit))
 
 
@@ -275,7 +275,7 @@ async def read_file(*, machine: Machine = "oracle", path: str, offset: float | N
 )
 async def write_file(
     *,
-    machine: Machine = "oracle",
+    machine: Machine,
     path: str,
     content: str,
     mode: Literal["rewrite", "append"] | None = None,
@@ -290,7 +290,7 @@ async def write_file(
 )
 async def list_directory(
     *,
-    machine: Machine = "oracle",
+    machine: Machine,
     path: Annotated[str | None, Field(description="Defaults to the home directory.")] = None,
     depth: Annotated[float | None, Field(description="Default 2.")] = None,
 ) -> CallToolResult:
@@ -302,7 +302,7 @@ async def list_directory(
     annotations=READ_ONLY,
     structured_output=False,
 )
-async def list_skills(*, machine: Machine = "oracle") -> CallToolResult:
+async def list_skills(*, machine: Machine) -> CallToolResult:
     return await _dispatch_sync(machine, "list_skills", {})
 
 
@@ -311,7 +311,7 @@ async def list_skills(*, machine: Machine = "oracle") -> CallToolResult:
     annotations=READ_ONLY,
     structured_output=False,
 )
-async def get_skill(*, machine: Machine = "oracle", skill_name: str) -> CallToolResult:
+async def get_skill(*, machine: Machine, skill_name: str) -> CallToolResult:
     return await _dispatch_sync(machine, "get_skill", {"skill_name": skill_name})
 
 
@@ -320,7 +320,7 @@ async def get_skill(*, machine: Machine = "oracle", skill_name: str) -> CallTool
     annotations=READ_ONLY,
     structured_output=False,
 )
-async def get_file(*, machine: Machine = "oracle", path: str) -> CallToolResult:
+async def get_file(*, machine: Machine, path: str) -> CallToolResult:
     return await _dispatch_sync(machine, "get_file", {"path": path})
 
 
@@ -331,7 +331,7 @@ async def get_file(*, machine: Machine = "oracle", path: str) -> CallToolResult:
 )
 async def send_file(
     *,
-    machine: Machine = "oracle",
+    machine: Machine,
     path: str,
     content_base64: str,
     overwrite: bool | None = None,
@@ -344,35 +344,53 @@ async def send_file(
 
 
 @mcp.tool(
-    description="Send a notification to AIVA or to Mike. Takes no machine: delivery happens in the cloud, so it works even when every machine is asleep. target 'aiva' pushes the message into the AIVA session inbox, and that is where routine status, progress, and finished background work belong. target 'mike' sends a REAL iMessage to Mike Shaffer's personal phone, so use it only for something he needs to see right now, such as work that is blocked on his decision, and never for routine status. target 'all' sends both. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+    description="Send a notification to AIVA or to Mike. Takes no machine: target 'aiva' and the internal 'dev' compatibility target use the local CAO spool, while target 'mike' calls api.sendblue.co directly. target 'all' sends to AIVA and Mike. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
     annotations=WRITE_DESTRUCTIVE,
     structured_output=False,
 )
-def notify(
+async def notify(
     *,
-    target: Annotated[Literal["aiva", "mike", "all"], Field(description="Who to notify. 'aiva' is the AIVA session inbox and is the right choice for anything routine. 'mike' texts a real person's phone, so reserve it for something he needs to see right now. 'all' sends to both.")],
-    message: Annotated[str, Field(description="The notification text. Write it so it stands alone, because the reader has none of your context.")],
-    source: Annotated[str | None, Field(alias="from", description="Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.")] = None,
+    target: str,
+    message: str,
+    from_: Annotated[str | None, Field(validation_alias="from")] = None,
 ) -> CallToolResult:
+    normalized = target.strip().lower()
+    source = (from_ or "mcp-agent").strip() or "mcp-agent"
+    if normalized not in {"aiva", "dev", "mike", "all"}:
+        return _result({"ok": False, "status": "failed", "error": "'target' is required and must be one of: aiva, dev, mike, all"})
     if not message.strip():
         return _result({"ok": False, "status": "failed", "error": "'message' is required and cannot be empty"})
-    cli_target = "all" if target == "all" else target
-    cmd = ["/usr/local/bin/notify", cli_target, message, "--from", source or "mcp-agent"]
-    try:
-        completed = subprocess.run(cmd, text=True, capture_output=True, timeout=25, env={**os.environ, "AIVA_MCP_TOKEN": STATIC_TOKEN})
-    except Exception as exc:
-        return _result({"ok": False, "status": "failed", "error": str(exc)})
-    output = (completed.stdout or "").strip()
-    error = (completed.stderr or "").strip()
-    if completed.returncode != 0:
-        return _result({"ok": False, "status": "failed", "error": error or output or f"notify exited {completed.returncode}"})
-    try:
-        parsed = json.loads(output)
-        if isinstance(parsed, dict):
-            return _result(parsed)
-    except Exception:
-        pass
-    return _result({"ok": True, "status": "success", "target": target, "detail": output or "notification accepted"})
+
+    wanted = ["aiva", "mike"] if normalized == "all" else [normalized]
+    channels: list[dict[str, Any]] = []
+    for channel in wanted:
+        if channel == "mike":
+            channels.append(send_mike(message, source))
+            continue
+        path, content, inbox_target = make_spool_record(channel, message, source)
+        result = await AGENT_HUB.dispatch(
+            "oracle",
+            "write_file",
+            {"path": str(path), "content": content, "mode": "rewrite", "timeout_seconds": 10},
+        )
+        if result.get("ok"):
+            channels.append({"channel": channel, "ok": True, "detail": f"queued for {inbox_target} on local CAO spool"})
+        else:
+            channels.append({"channel": channel, "ok": False, "error": str(result.get("error") or "Oracle spool write failed")})
+    return _result(summarize(normalized, source, channels))
+
+
+def _apply_worker_tool_schemas() -> None:
+    registered = mcp._tool_manager._tools
+    if set(registered) != set(WORKER_TOOL_SCHEMAS):
+        missing = sorted(set(WORKER_TOOL_SCHEMAS) - set(registered))
+        extra = sorted(set(registered) - set(WORKER_TOOL_SCHEMAS))
+        raise RuntimeError(f"MCP tool contract mismatch at startup: missing={missing} extra={extra}")
+    for name, schema in WORKER_TOOL_SCHEMAS.items():
+        registered[name].parameters = schema
+
+
+_apply_worker_tool_schemas()
 
 
 def _transport_security() -> TransportSecuritySettings:

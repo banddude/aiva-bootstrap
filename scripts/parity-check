@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from tool_contract import WORKER_TOOL_SCHEMAS
+
+
+def _rpc(url: str, token: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url.rstrip("/") + "/",
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).encode(),
+        method="POST",
+    )
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("Accept", "application/json, text/event-stream")
+    request.add_header("User-Agent", "aiva-mcp-parity-check")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read().decode()
+    if raw.startswith("event:"):
+        raw = "\n".join(line[6:] for line in raw.splitlines() if line.startswith("data: "))
+    return json.loads(raw)
+
+
+def _tools(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {tool["name"]: tool["inputSchema"] for tool in payload.get("result", {}).get("tools", [])}
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--oracle-url", required=True)
+    parser.add_argument("--worker-url", default="https://aiva-mcp.mikejshaffer.workers.dev")
+    parser.add_argument("--token-file", default="/home/ubuntu/.aiva/agent/token")
+    args = parser.parse_args(argv)
+    token = os.environ.get("AIVA_MCP_TOKEN") or Path(args.token_file).read_text(encoding="utf-8").strip()
+    worker = _tools(_rpc(args.worker_url, token))
+    oracle = _tools(_rpc(args.oracle_url, token))
+    expected = WORKER_TOOL_SCHEMAS
+    summary = {
+        "worker_tool_count": len(worker),
+        "oracle_tool_count": len(oracle),
+        "expected_tool_count": len(expected),
+        "worker_matches_expected": worker == expected,
+        "oracle_matches_worker": oracle == worker,
+        "worker_names": sorted(worker),
+        "oracle_names": sorted(oracle),
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    if not summary["worker_matches_expected"]:
+        print("parity-check: FAILED: checked-in Worker contract is stale")
+        return 1
+    if not summary["oracle_matches_worker"]:
+        print("parity-check: FAILED: Oracle names or input schemas differ from Worker")
+        return 1
+    print("parity-check: OK: Oracle names and input schemas match the live Worker")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
