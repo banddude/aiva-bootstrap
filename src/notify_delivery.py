@@ -20,7 +20,11 @@ SENDBLUE_URL = "https://api.sendblue.co/api/send-message"
 
 def _read_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for raw in content.splitlines():
         line = raw.strip()
         if line.startswith("export "):
             line = line[7:].strip()
