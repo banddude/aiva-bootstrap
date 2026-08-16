@@ -73,6 +73,7 @@ async def test_notify_aiva_delivers_via_local_spool_with_worker_dead():
     before = set((spool / "pending").glob("*.json")) if (spool / "pending").is_dir() else set()
 
     async with Rig() as rig:
+        await rig.connect_machine()
         parsed, is_error = await rig.call_tool(
             "notify",
             {"target": "aiva", "message": "dead-worker delivery check", "from": "ci"},

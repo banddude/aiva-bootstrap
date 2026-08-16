@@ -2,13 +2,16 @@
 Cloudflare Worker's declared tool contract, name for name and schema for schema.
 
 The reference is contract/worker-tools.json (generated from the live Worker by
-scripts/parity-check --refresh; see its _provenance block). The server loads
-that SAME file at startup, so a hand edit of the file would move both sides
-together and pass silently. The sha256 pin (contract/worker-tools.SHA256)
-closes that: the file must hash to the pin or the gate is red.
+scripts/parity-check --refresh; see its _provenance block). PR #5 keeps the
+runtime contract in src/tool_contract.py, independently of this generated
+reference. That is useful: if either the runtime contract or the generated
+reference drifts, advertised != file and this test is red. The sha256 pin
+(contract/worker-tools.SHA256) also catches an unreviewed hand edit of the
+generated reference.
 
-A green run here means: pin holds, advertised == file, and file == what
-clients are told to bind to. The live Worker is deliberately NOT contacted:
+A green run here means: pin holds and the server actually advertises exactly
+the names and input schemas captured from the Worker. The live Worker is
+deliberately NOT contacted:
 this gate runs with AIVA_MCP_URL dead (see conftest) so it can never pass by
 asking Cloudflare. Freshness vs the live Worker is `parity-check --live`'s
 job, run where a token exists.
@@ -23,8 +26,6 @@ from typing import Any
 
 import pytest
 from rig import Rig
-
-pytestmark = pytest.mark.asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contract" / "worker-tools.json"
@@ -68,6 +69,7 @@ def schema_diff(name: str, advertised: Any, reference: Any, path: str = "") -> l
     return diffs
 
 
+@pytest.mark.asyncio
 async def test_advertised_tools_match_worker_contract_exactly():
     contract = load_contract()
     async with Rig() as rig:
@@ -90,6 +92,7 @@ async def test_advertised_tools_match_worker_contract_exactly():
     )
 
 
+@pytest.mark.asyncio
 async def test_machine_is_required_on_every_machine_backed_tool():
     """The Worker contract requires `machine` on all 10 machine-backed tools.
     Advertised parity covers the schema; THIS test proves call-time validation

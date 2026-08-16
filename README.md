@@ -85,13 +85,14 @@ can pass because Cloudflare happened to be healthy. That exact mistake is how
 a 2026-08-15 outage hid for ten hours, which is why the pin exists.
 
 `contract/worker-tools.json` is the reference tool contract generated from the
-Cloudflare Worker this server replaces. The server loads it at startup (a
-drift is a boot failure, not a silent difference) and the parity gate verifies
-the advertised names and input schemas against it exactly. The file is pinned
-by `contract/worker-tools.SHA256`; the gate fails if the file was changed
-without re-pinning, because a hand edit would otherwise move the server and
-the gate together and pass silently. Never edit the contract by hand. If the
-Worker contract really changed, regenerate both files where a token exists:
+Cloudflare Worker this server replaces. The runtime contract from PR #5 lives
+independently in `src/tool_contract.py`, and the parity gate boots the real
+server and verifies its advertised names and input schemas against the generated
+reference exactly. That independence is intentional: drift on either side makes
+the gate red. The generated file is also pinned by
+`contract/worker-tools.SHA256`, so an unreviewed hand edit fails separately.
+Never edit the generated contract by hand. If the Worker contract really
+changed, regenerate both files where a token exists:
 
 ```bash
 python scripts/parity-check --refresh   # regenerate contract + pin from the live Worker

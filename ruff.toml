@@ -13,3 +13,7 @@ ignore = [
     # (contract/worker-tools.json); re-wrapping them would drift the contract.
     "E501",
 ]
+
+[lint.per-file-ignores]
+"src/server.py" = ["E402"]
+"tests/test_contract_and_notify.py" = ["E402"]
