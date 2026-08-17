@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
@@ -62,6 +62,9 @@ HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 STATE = Path(os.environ.get("AIVA_STATE", HOME / "state")).resolve()
 HOST = os.environ.get("AIVA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
+CHATGPT_TRANSFER_ROOT = PurePosixPath(
+    os.environ.get("AIVA_CHATGPT_TRANSFER_ROOT", "/tmp/aiva-chatgpt-transfer")
+)
 
 STATE.mkdir(parents=True, exist_ok=True)
 OAUTH_COUNTS_AT_BOOT = initialize_store()
@@ -188,6 +191,27 @@ def _result(result: Any) -> CallToolResult:
 
 def _clean_args(**kwargs: Any) -> dict[str, Any]:
     return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def _staged_transfer_path(path: str) -> str:
+    value = path.strip()
+    if not value:
+        raise ValueError("path must name a staged file")
+
+    raw = PurePosixPath(value)
+    candidate = raw if raw.is_absolute() else CHATGPT_TRANSFER_ROOT / raw
+    if ".." in candidate.parts:
+        raise ValueError("path traversal is not allowed")
+
+    try:
+        relative = candidate.relative_to(CHATGPT_TRANSFER_ROOT)
+    except ValueError as exc:
+        raise ValueError(
+            f"get_file only reads files staged under {CHATGPT_TRANSFER_ROOT}"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("path must name a file inside the staged transfer directory")
+    return str(candidate)
 
 
 async def _dispatch_sync(machine: str, tool: str, args: dict[str, Any]) -> CallToolResult:
@@ -324,12 +348,22 @@ async def get_skill(*, machine: Machine, skill_name: str) -> CallToolResult:
 
 
 @mcp.tool(
-    description="Fetch a file from the chosen machine as an embedded MCP resource with its MIME type preserved.",
+    description=(
+        "Transfer a file that was explicitly staged for ChatGPT under "
+        "/tmp/aiva-chatgpt-transfer on the chosen machine. Returns the file as an embedded MCP "
+        "resource with its MIME type preserved. This read-only action cannot access arbitrary "
+        "filesystem paths; stage the file in the handoff directory first."
+    ),
     annotations=READ_ONLY,
     structured_output=False,
 )
 async def get_file(*, machine: Machine, path: str) -> CallToolResult:
-    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": path})
+    try:
+        staged_path = _staged_transfer_path(path)
+    except ValueError as exc:
+        return _result({"ok": False, "error": str(exc)})
+
+    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": staged_path})
     if not isinstance(result, dict) or result.get("ok") is False:
         return _result(result)
 
@@ -337,7 +371,7 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
     if not isinstance(blob, str):
         return _result({"ok": False, "error": "get_file response did not contain content_base64"})
 
-    returned_path = str(result.get("path") or path)
+    returned_path = str(result.get("path") or staged_path)
     mime_type = mimetypes.guess_type(returned_path)[0] or "application/octet-stream"
     resource_uri = f"aiva-file://{machine}{quote(returned_path, safe='/')}"
     resource = BlobResourceContents(

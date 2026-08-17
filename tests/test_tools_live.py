@@ -216,7 +216,7 @@ async def test_send_get_file_binary_round_trip_and_overwrite_guard():
             "send_file",
             {
                 "machine": "oracle",
-                "path": "bin/blob.bin",
+                "path": str(rig.transfer_root / "blob.bin"),
                 "content_base64": base64.b64encode(payload).decode(),
             },
         )
@@ -228,7 +228,7 @@ async def test_send_get_file_binary_round_trip_and_overwrite_guard():
             "send_file",
             {
                 "machine": "oracle",
-                "path": "bin/blob.bin",
+                "path": str(rig.transfer_root / "blob.bin"),
                 "content_base64": base64.b64encode(b"x").decode(),
             },
         )
@@ -239,14 +239,14 @@ async def test_send_get_file_binary_round_trip_and_overwrite_guard():
             "send_file",
             {
                 "machine": "oracle",
-                "path": "bin/blob.bin",
+                "path": str(rig.transfer_root / "blob.bin"),
                 "content_base64": base64.b64encode(b"x").decode(),
                 "overwrite": True,
             },
         )
         assert parsed["ok"] is True
 
-        parsed, _ = await rig.call_tool("get_file", {"machine": "oracle", "path": "bin/blob.bin"})
+        parsed, _ = await rig.call_tool("get_file", {"machine": "oracle", "path": "blob.bin"})
         assert parsed["type"] == "resource"
         assert parsed["resource"]["mimeType"] == "application/octet-stream"
         assert base64.b64decode(parsed["resource"]["blob"]) == b"x"

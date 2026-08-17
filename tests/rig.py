@@ -352,7 +352,12 @@ class Rig:
 
         self.tmp = P(tempfile.mkdtemp(prefix="aiva-rig-"))
         self.sandbox = make_sandbox(P(self.tmp))
+        self.transfer_root = self.sandbox / "chatgpt-transfer"
+        self.transfer_root.mkdir(parents=True, exist_ok=True)
         self.server = LiveServer(P(self.tmp))
+        self.server.server_module.CHATGPT_TRANSFER_ROOT = self.server.server_module.PurePosixPath(
+            str(self.transfer_root)
+        )
         self.agent: StubMachineAgent | None = None
         self.session = None
         self._stack = AsyncExitStack()
@@ -370,6 +375,7 @@ class Rig:
             extra_roots=(
                 Path(os.environ["AIVA_CAO_BRIDGE_STATE_DIR"]),
                 Path(os.environ["AIVA_CAO_DEV_BRIDGE_STATE_DIR"]),
+                self.transfer_root,
             ),
         )
         await self.agent.start()
