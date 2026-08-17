@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 import uvicorn
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import (
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import AnyHttpUrl, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -316,12 +324,33 @@ async def get_skill(*, machine: Machine, skill_name: str) -> CallToolResult:
 
 
 @mcp.tool(
-    description="Fetch a file (including binary) from the chosen machine, returned as base64.",
+    description="Fetch a file from the chosen machine as an embedded MCP resource with its MIME type preserved.",
     annotations=READ_ONLY,
     structured_output=False,
 )
 async def get_file(*, machine: Machine, path: str) -> CallToolResult:
-    return await _dispatch_sync(machine, "get_file", {"path": path})
+    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": path})
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return _result(result)
+
+    blob = result.get("content_base64")
+    if not isinstance(blob, str):
+        return _result({"ok": False, "error": "get_file response did not contain content_base64"})
+
+    returned_path = str(result.get("path") or path)
+    mime_type = mimetypes.guess_type(returned_path)[0] or "application/octet-stream"
+    resource_uri = f"aiva-file://{machine}{quote(returned_path, safe='/')}"
+    resource = BlobResourceContents(
+        uri=resource_uri,
+        mime_type=mime_type,
+        blob=blob,
+        _meta={
+            "filename": Path(returned_path).name,
+            "size": result.get("bytes"),
+            "machine": machine,
+        },
+    )
+    return CallToolResult(content=[EmbeddedResource(type="resource", resource=resource)])
 
 
 @mcp.tool(

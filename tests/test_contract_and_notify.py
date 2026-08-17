@@ -31,6 +31,42 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(asyncio.run(declared()), WORKER_TOOL_SCHEMAS)
 
 
+class GetFileTests(unittest.TestCase):
+    def test_get_file_returns_embedded_blob_resource(self) -> None:
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "/tmp/report.pdf"}))
+            return {
+                "ok": True,
+                "path": "/tmp/report.pdf",
+                "bytes": 4,
+                "content_base64": "JVBERg==",
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.get_file(machine="oracle", path="/tmp/report.pdf"))
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(len(result.content), 1)
+        embedded = result.content[0]
+        self.assertEqual(embedded.type, "resource")
+        self.assertEqual(embedded.resource.uri, "aiva-file://oracle/tmp/report.pdf")
+        self.assertEqual(embedded.resource.mime_type, "application/pdf")
+        self.assertEqual(embedded.resource.blob, "JVBERg==")
+        self.assertEqual(embedded.resource.meta["filename"], "report.pdf")
+        self.assertEqual(embedded.resource.meta["size"], 4)
+
+    def test_get_file_preserves_error_as_text(self) -> None:
+        async def dispatch(machine, tool, args):
+            return {"ok": False, "error": "missing"}
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.get_file(machine="oracle", path="/tmp/missing.pdf"))
+
+        self.assertTrue(result.is_error)
+        self.assertEqual(result.content[0].type, "text")
+        self.assertIn("missing", result.content[0].text)
+
+
 class NotifyTests(unittest.TestCase):
     def test_aiva_writes_local_bridge_spool(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
