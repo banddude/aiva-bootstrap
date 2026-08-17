@@ -342,7 +342,7 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
     resource_uri = f"aiva-file://{machine}{quote(returned_path, safe='/')}"
     resource = BlobResourceContents(
         uri=resource_uri,
-        mimeType=mime_type,
+        mime_type=mime_type,
         blob=blob,
         _meta={
             "filename": Path(returned_path).name,
