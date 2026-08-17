@@ -39,7 +39,7 @@ Tell it:
 - `list_files`
 - `read_file`
 - `write_file`
-- `get_file_base64`
+- `get_file` (returns an embedded MCP resource, including binary files)
 - `list_skills`
 - `get_skill`
 - `save_skill`
