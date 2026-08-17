@@ -137,7 +137,7 @@ class AgentHub:
             wait_sec = min(timeout_sec + 3, 20)
             try:
                 return await asyncio.wait_for(future, timeout=wait_sec)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return {
                     "ok": False,
                     "error": (
