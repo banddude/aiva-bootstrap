@@ -392,13 +392,18 @@ class Rig:
                 await asyncio.sleep(0.05)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
-        """Call a tool over real MCP HTTP and return (parsed_json, is_error)."""
+        """Call a tool over real MCP HTTP and return (parsed_content, is_error)."""
         result = await self.session.call_tool(name, arguments or {})
-        text = result.content[0].text if result.content else ""
-        try:
-            parsed = json.loads(text)
-        except ValueError:
-            parsed = text
+        if not result.content:
+            parsed: Any = ""
+        elif result.content[0].type == "text":
+            text = result.content[0].text
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                parsed = text
+        else:
+            parsed = result.content[0].model_dump(mode="json", by_alias=True)
         return parsed, bool(result.is_error)
 
     async def __aexit__(self, *exc: object) -> None:
