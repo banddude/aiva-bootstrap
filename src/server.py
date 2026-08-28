@@ -357,7 +357,7 @@ def notify(
     if not message.strip():
         return _result({"ok": False, "status": "failed", "error": "'message' is required and cannot be empty"})
     cli_target = "all" if target == "all" else target
-    cmd = ["/usr/local/bin/notify", cli_target, message, "--from", source or "mcp-agent"]
+    cmd = ["/tmp/aiva-issue-286/worktree/modules/notify/bin/notify", cli_target, message, "--from", source or "mcp-agent"]
     try:
         completed = subprocess.run(cmd, text=True, capture_output=True, timeout=25, env={**os.environ, "AIVA_MCP_TOKEN": STATIC_TOKEN})
     except Exception as exc:
