@@ -2,13 +2,13 @@
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
     "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
-    "refreshed_from": "http://127.0.0.1:18791",
+    "refreshed_from": "https://mcp.officeadmin.io",
     "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh, only when the Worker contract really changed, and commit the file and its pin together.",
     "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker."
   },
   "tools": {
     "get_file": {
-      "description": "Transfer a file that was explicitly staged for ChatGPT under /tmp/aiva-chatgpt-transfer on the chosen machine. Returns the file as an embedded MCP resource with its MIME type preserved. This read-only action cannot access arbitrary filesystem paths; stage the file in the handoff directory first.",
+      "description": "Transfer a file (including binary) from the chosen machine. Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths. Returns the file as an embedded MCP resource with its MIME type preserved.",
       "inputSchema": {
         "properties": {
           "machine": {
