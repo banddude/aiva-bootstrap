@@ -410,21 +410,21 @@ async def get_skill(*, machine: Machine, skill_name: str) -> CallToolResult:
 
 @mcp.tool(
     description=(
-        "Transfer a file that was explicitly staged for ChatGPT under "
-        "/tmp/aiva-chatgpt-transfer on the chosen machine. Returns the file as an embedded MCP "
-        "resource with its MIME type preserved. This read-only action cannot access arbitrary "
-        "filesystem paths; stage the file in the handoff directory first."
+        "Transfer a file (including binary) from the chosen machine. "
+        "Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths. "
+        "Returns the file as an embedded MCP resource with its MIME type preserved."
     ),
     annotations=READ_ONLY,
     structured_output=False,
 )
 async def get_file(*, machine: Machine, path: str) -> CallToolResult:
-    try:
-        staged_path = _staged_transfer_path(path)
-    except ValueError as exc:
-        return _result({"ok": False, "error": str(exc)})
+    # Match read_file/read_image path semantics. The selected machine agent owns
+    # path expansion (including ~/...) and filesystem access.
+    source_path = path.strip()
+    if not source_path:
+        return _result({"ok": False, "error": "path is required"})
 
-    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": staged_path})
+    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": source_path})
     if not isinstance(result, dict) or result.get("ok") is False:
         return _result(result)
 
@@ -432,7 +432,7 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
     if not isinstance(blob, str):
         return _result({"ok": False, "error": "get_file response did not contain content_base64"})
 
-    returned_path = str(result.get("path") or staged_path)
+    returned_path = str(result.get("path") or source_path)
     mime_type = mimetypes.guess_type(returned_path)[0] or "application/octet-stream"
     resource_uri = f"aiva-file://{machine}{quote(returned_path, safe='/')}"
     resource = BlobResourceContents(
