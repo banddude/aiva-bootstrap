@@ -1,10 +1,10 @@
 {
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
-    "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
-    "refreshed_from": "https://mcp.officeadmin.io",
-    "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh, only when the Worker contract really changed, and commit the file and its pin together.",
-    "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker."
+    "refresh_method": "scripts/parity-check --refresh (in-process boot of this repo's server)",
+    "refreshed_from": "local boot of this repo's server at commit 04c39d83488ec04b9a7a1095a11660f74924f409",
+    "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh when the server's tools change, and commit the file and its pin together.",
+    "what": "Reference tool contract: the AIVA MCP tools as advertised by the Python MCP server (src/server.py)."
   },
   "tools": {
     "get_file": {
