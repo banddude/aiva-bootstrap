@@ -352,12 +352,12 @@ class Rig:
 
         self.tmp = P(tempfile.mkdtemp(prefix="aiva-rig-"))
         self.sandbox = make_sandbox(P(self.tmp))
+        # A plain sandbox directory tests can stage files in (send_file/get_file
+        # round-trips). It carries no server-side meaning: get_file reads any
+        # path the machine agent can see.
         self.transfer_root = self.sandbox / "chatgpt-transfer"
         self.transfer_root.mkdir(parents=True, exist_ok=True)
         self.server = LiveServer(P(self.tmp))
-        self.server.server_module.CHATGPT_TRANSFER_ROOT = self.server.server_module.PurePosixPath(
-            str(self.transfer_root)
-        )
         self.agent: StubMachineAgent | None = None
         self.session = None
         self._stack = AsyncExitStack()

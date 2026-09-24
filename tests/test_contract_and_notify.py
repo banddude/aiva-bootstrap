@@ -86,6 +86,29 @@ class GetFileTests(unittest.TestCase):
         self.assertEqual(embedded.resource.uri, "aiva-file://laptop/Users/mikeshaffer/Documents/report.pdf")
         self.assertEqual(embedded.resource.mime_type, "application/pdf")
 
+    def test_get_file_passes_relative_path_unchanged(self) -> None:
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "reports/x.pdf"}))
+            return {
+                "ok": True,
+                "path": "reports/x.pdf",
+                "bytes": 4,
+                "content_base64": "JVBERg==",
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.get_file(machine="oracle", path="reports/x.pdf"))
+
+        self.assertFalse(result.is_error)
+        embedded = result.content[0]
+        self.assertEqual(embedded.type, "resource")
+        # The URI is f"aiva-file://{machine}{quoted path}": a relative path has
+        # no leading "/" to separate machine from path, so it reads concatenated.
+        # Existing behavior for every path form; not a relative-path regression.
+        self.assertEqual(embedded.resource.uri, "aiva-file://oraclereports/x.pdf")
+        self.assertEqual(embedded.resource.mime_type, "application/pdf")
+        self.assertEqual(embedded.resource.meta["filename"], "x.pdf")
+
     def test_get_file_rejects_empty_path_without_dispatch(self) -> None:
         with patch.object(server.AGENT_HUB, "dispatch") as dispatch:
             result = asyncio.run(server.get_file(machine="oracle", path="   "))
@@ -100,7 +123,10 @@ class ReadImageTests(unittest.TestCase):
         png = bytes.fromhex("89504e470d0a1a0a") + b"test"
 
         async def dispatch(machine, tool, args):
-            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "/tmp/example.png"}))
+            self.assertEqual(
+                (machine, tool, args),
+                ("oracle", "get_file", {"path": "/tmp/example.png", "max_bytes": server.READ_IMAGE_MAX_BYTES}),
+            )
             return {
                 "ok": True,
                 "path": "/tmp/example.png",
@@ -122,7 +148,10 @@ class ReadImageTests(unittest.TestCase):
         jpeg = bytes.fromhex("ffd8ff") + b"test"
 
         async def dispatch(machine, tool, args):
-            self.assertEqual((machine, tool, args), ("laptop", "get_file", {"path": "~/Pictures/example.jpg"}))
+            self.assertEqual(
+                (machine, tool, args),
+                ("laptop", "get_file", {"path": "~/Pictures/example.jpg", "max_bytes": server.READ_IMAGE_MAX_BYTES}),
+            )
             return {
                 "ok": True,
                 "path": "/Users/mike/Pictures/example.jpg",
@@ -141,7 +170,7 @@ class ReadImageTests(unittest.TestCase):
         png = bytes.fromhex("89504e470d0a1a0a") + b"test"
 
         async def dispatch(machine, tool, args):
-            self.assertEqual(args, {"path": "/Users/mike/Desktop/example.png"})
+            self.assertEqual(args, {"path": "/Users/mike/Desktop/example.png", "max_bytes": server.READ_IMAGE_MAX_BYTES})
             return {
                 "ok": True,
                 "bytes": len(png),
@@ -170,6 +199,26 @@ class ReadImageTests(unittest.TestCase):
             result = asyncio.run(server.read_image(machine="oracle", path="/tmp/fake.png"))
         self.assertTrue(result.is_error)
         self.assertIn("not a supported PNG or JPEG", result.content[0].text)
+
+    def test_read_image_post_transfer_size_check_still_enforced(self) -> None:
+        """Second line of defense: even if a machine agent ignores max_bytes
+        and returns an oversized image anyway, the server refuses it here."""
+        png = bytes.fromhex("89504e470d0a1a0a") + b"test"
+
+        async def dispatch(machine, tool, args):
+            # An agent that predates max_bytes: reads everything, reports the
+            # true (oversized) byte count with the returned blob.
+            return {
+                "ok": True,
+                "bytes": server.READ_IMAGE_MAX_BYTES + 1,
+                "content_base64": base64.b64encode(png).decode(),
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.read_image(machine="oracle", path="/tmp/big.png"))
+        self.assertTrue(result.is_error)
+        self.assertIn("too large", result.content[0].text)
+        self.assertIn(str(server.READ_IMAGE_MAX_BYTES), result.content[0].text)
 
 
 class NotifyTests(unittest.TestCase):
