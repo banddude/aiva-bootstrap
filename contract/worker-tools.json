@@ -2,13 +2,13 @@
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
     "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
-    "refreshed_from": "https://aiva-mcp.mikejshaffer.workers.dev, https://mcp.officeadmin.io",
+    "refreshed_from": "http://127.0.0.1:18791",
     "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh, only when the Worker contract really changed, and commit the file and its pin together.",
     "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker."
   },
   "tools": {
     "get_file": {
-      "description": "Fetch a file (including binary) from the chosen machine, returned as base64.",
+      "description": "Transfer a file that was explicitly staged for ChatGPT under /tmp/aiva-chatgpt-transfer on the chosen machine. Returns the file as an embedded MCP resource with its MIME type preserved. This read-only action cannot access arbitrary filesystem paths; stage the file in the handoff directory first.",
       "inputSchema": {
         "properties": {
           "machine": {
@@ -157,7 +157,7 @@
       }
     },
     "notify": {
-      "description": "Send a notification to AIVA or to Mike. Takes no machine: delivery happens in the cloud, so it works even when every machine is asleep. target 'aiva' pushes the message into the AIVA session inbox, and that is where routine status, progress, and finished background work belong. target 'mike' sends a REAL iMessage to Mike Shaffer's personal phone, so use it only for something he needs to see right now, such as work that is blocked on his decision, and never for routine status. target 'all' sends both. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+      "description": "Send a notification to AIVA or to Mike. Takes no machine: target 'aiva' and the internal 'dev' compatibility target use the local CAO spool, while target 'mike' calls api.sendblue.co directly. target 'all' sends to AIVA and Mike. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -203,6 +203,30 @@
           },
           "offset": {
             "type": "number"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "read_image": {
+      "description": "Read a JPEG or PNG from the chosen machine as native MCP image content. Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths, plus local file:// URLs. Refuses non-images or images over 10 MiB.",
+      "inputSchema": {
+        "properties": {
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
           },
           "path": {
             "type": "string"

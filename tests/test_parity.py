@@ -94,12 +94,12 @@ async def test_advertised_tools_match_worker_contract_exactly():
 
 @pytest.mark.asyncio
 async def test_machine_is_required_on_every_machine_backed_tool():
-    """The Worker contract requires `machine` on all 10 machine-backed tools.
+    """The Worker contract requires `machine` on all 11 machine-backed tools.
     Advertised parity covers the schema; THIS test proves call-time validation
     enforces it, so a client that omits machine gets an error, not a default."""
     contract = load_contract()
     machine_backed = [n for n, s in contract.items() if "machine" in s.get("properties", {})]
-    assert len(machine_backed) == 10, f"expected 10 machine-backed tools, contract lists {len(machine_backed)}"
+    assert len(machine_backed) == 11, f"expected 11 machine-backed tools, contract lists {len(machine_backed)}"
 
     async with Rig() as rig:
         await rig.connect_machine()
@@ -107,7 +107,7 @@ async def test_machine_is_required_on_every_machine_backed_tool():
             args: dict[str, object] = {"command": "echo hi"} if tool.startswith("run_command") else {}
             if tool == "write_file":
                 args = {"path": "x.txt", "content": "x"}
-            elif tool in ("read_file", "get_file"):
+            elif tool in ("read_file", "get_file", "read_image"):
                 args = {"path": "notes.txt"}
             elif tool == "send_file":
                 args = {"path": "y.bin", "content_base64": "eA=="}

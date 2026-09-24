@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import os
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import uvicorn
 from mcp.server import MCPServer
@@ -15,6 +17,7 @@ from mcp.types import (
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
+    ImageContent,
     TextContent,
     ToolAnnotations,
 )
@@ -65,6 +68,7 @@ PORT = int(os.environ.get("PORT", "8765"))
 CHATGPT_TRANSFER_ROOT = PurePosixPath(
     os.environ.get("AIVA_CHATGPT_TRANSFER_ROOT", "/tmp/aiva-chatgpt-transfer")
 )
+READ_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 STATE.mkdir(parents=True, exist_ok=True)
 OAUTH_COUNTS_AT_BOOT = initialize_store()
@@ -191,6 +195,63 @@ def _result(result: Any) -> CallToolResult:
 
 def _clean_args(**kwargs: Any) -> dict[str, Any]:
     return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def _read_image_source(path: str) -> tuple[str, str]:
+    value = path.strip()
+    if not value:
+        raise ValueError("path is required")
+
+    if "://" in value:
+        parsed = urlparse(value)
+        if parsed.scheme != "file":
+            raise ValueError("read_image only accepts local paths or file:// URLs")
+        if parsed.hostname not in (None, "", "localhost"):
+            raise ValueError("file:// image URLs must refer to the local machine")
+        if parsed.query or parsed.fragment:
+            raise ValueError("file:// image URLs cannot include query strings or fragments")
+        value = unquote(parsed.path)
+
+    # Match read_file/get_file path semantics. The selected machine agent owns
+    # path expansion (including ~/...) and filesystem access. This wrapper only
+    # validates that the requested file is an image type we can safely return.
+    candidate = PurePosixPath(value)
+    suffix = candidate.suffix.lower()
+    if suffix == ".png":
+        mime_type = "image/png"
+    elif suffix in {".jpg", ".jpeg"}:
+        mime_type = "image/jpeg"
+    else:
+        raise ValueError("read_image only supports .png, .jpg, and .jpeg files")
+    return str(candidate), mime_type
+
+
+def _validated_image(blob: Any, expected_mime: str, reported_bytes: Any = None) -> tuple[bytes, str]:
+    if not isinstance(blob, str):
+        raise ValueError("read_image response did not contain content_base64")
+    try:
+        raw = base64.b64decode(blob, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("machine returned invalid base64 image data") from exc
+
+    size = len(raw)
+    try:
+        if reported_bytes is not None:
+            size = max(size, int(reported_bytes))
+    except (TypeError, ValueError):
+        pass
+    if size > READ_IMAGE_MAX_BYTES:
+        raise ValueError(f"image is too large ({size} bytes); read_image limit is {READ_IMAGE_MAX_BYTES} bytes")
+
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        actual_mime = "image/png"
+    elif raw.startswith(b"\xff\xd8\xff"):
+        actual_mime = "image/jpeg"
+    else:
+        raise ValueError("file content is not a supported PNG or JPEG image")
+    if actual_mime != expected_mime:
+        raise ValueError(f"image content type {actual_mime} does not match the file extension ({expected_mime})")
+    return raw, actual_mime
 
 
 def _staged_transfer_path(path: str) -> str:
@@ -385,6 +446,40 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
         },
     )
     return CallToolResult(content=[EmbeddedResource(type="resource", resource=resource)])
+
+
+@mcp.tool(
+    description=(
+        "Read a JPEG or PNG from the chosen machine as native MCP image content. "
+        "Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths, "
+        "plus local file:// URLs. Refuses non-images or images over 10 MiB."
+    ),
+    annotations=READ_ONLY,
+    structured_output=False,
+)
+async def read_image(*, machine: Machine, path: str) -> CallToolResult:
+    try:
+        source_path, expected_mime = _read_image_source(path)
+    except ValueError as exc:
+        return _result({"ok": False, "error": str(exc)})
+
+    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": source_path})
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return _result(result)
+
+    try:
+        _, mime_type = _validated_image(
+            result.get("content_base64"),
+            expected_mime,
+            result.get("bytes"),
+        )
+    except ValueError as exc:
+        return _result({"ok": False, "error": str(exc)})
+
+    return CallToolResult(
+        content=[ImageContent(data=result["content_base64"], mime_type=mime_type)],
+        is_error=False,
+    )
 
 
 @mcp.tool(
