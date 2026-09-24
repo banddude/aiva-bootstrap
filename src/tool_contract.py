@@ -77,6 +77,7 @@ WORKER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_skills": _obj({"machine": MACHINE_PROP}, ["machine"]),
     "get_skill": _obj({"machine": MACHINE_PROP, "skill_name": {"type": "string"}}, ["machine", "skill_name"]),
     "get_file": _obj({"machine": MACHINE_PROP, "path": {"type": "string"}}, ["machine", "path"]),
+    "read_image": _obj({"machine": MACHINE_PROP, "path": {"type": "string"}}, ["machine", "path"]),
     "send_file": _obj(
         {
             "machine": MACHINE_PROP,

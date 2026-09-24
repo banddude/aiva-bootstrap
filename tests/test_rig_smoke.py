@@ -18,7 +18,7 @@ async def test_rig_boots_and_lists_tools():
         names = sorted(t.name for t in result.tools)
         assert names == [
             "get_file", "get_skill", "inspect_machine", "job_result",
-            "list_directory", "list_skills", "notify", "read_file",
+            "list_directory", "list_skills", "notify", "read_file", "read_image",
             "run_command", "run_command_async", "send_file", "write_file",
         ], f"advertised tool set drifted: {names}"
 

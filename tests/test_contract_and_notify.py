@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -81,6 +82,52 @@ class GetFileTests(unittest.TestCase):
         self.assertTrue(result.is_error)
         self.assertIn("path traversal", result.content[0].text)
         dispatch.assert_not_called()
+
+
+class ReadImageTests(unittest.TestCase):
+    def test_read_image_returns_native_image_content(self) -> None:
+        png = bytes.fromhex("89504e470d0a1a0a") + b"test"
+
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "/tmp/example.png"}))
+            return {
+                "ok": True,
+                "path": "/tmp/example.png",
+                "bytes": len(png),
+                "content_base64": base64.b64encode(png).decode(),
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.read_image(machine="oracle", path="file:///tmp/example.png"))
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(len(result.content), 1)
+        image = result.content[0]
+        self.assertEqual(image.type, "image")
+        self.assertEqual(image.mime_type, "image/png")
+        self.assertEqual(image.data, base64.b64encode(png).decode())
+
+    def test_read_image_rejects_paths_outside_tmp_without_dispatch(self) -> None:
+        with patch.object(server.AGENT_HUB, "dispatch") as dispatch:
+            result = asyncio.run(server.read_image(machine="oracle", path="/etc/not-an-image.png"))
+        dispatch.assert_not_called()
+        self.assertTrue(result.is_error)
+        self.assertIn("under /tmp", result.content[0].text)
+
+    def test_read_image_rejects_non_image_content(self) -> None:
+        raw = b"not an image"
+
+        async def dispatch(machine, tool, args):
+            return {
+                "ok": True,
+                "bytes": len(raw),
+                "content_base64": base64.b64encode(raw).decode(),
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.read_image(machine="oracle", path="/tmp/fake.png"))
+        self.assertTrue(result.is_error)
+        self.assertIn("not a supported PNG or JPEG", result.content[0].text)
 
 
 class NotifyTests(unittest.TestCase):
