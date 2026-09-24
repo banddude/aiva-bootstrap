@@ -246,7 +246,9 @@ async def test_send_get_file_binary_round_trip_and_overwrite_guard():
         )
         assert parsed["ok"] is True
 
-        parsed, _ = await rig.call_tool("get_file", {"machine": "oracle", "path": "blob.bin"})
+        parsed, _ = await rig.call_tool(
+            "get_file", {"machine": "oracle", "path": str(rig.transfer_root / "blob.bin")}
+        )
         assert parsed["type"] == "resource"
         assert parsed["resource"]["mimeType"] == "application/octet-stream"
         assert base64.b64decode(parsed["resource"]["blob"]) == b"x"

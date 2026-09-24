@@ -35,22 +35,22 @@ class ContractTests(unittest.TestCase):
 class GetFileTests(unittest.TestCase):
     def test_get_file_returns_embedded_blob_resource(self) -> None:
         async def dispatch(machine, tool, args):
-            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "/tmp/aiva-chatgpt-transfer/report.pdf"}))
+            self.assertEqual((machine, tool, args), ("oracle", "get_file", {"path": "/home/ubuntu/report.pdf"}))
             return {
                 "ok": True,
-                "path": "/tmp/aiva-chatgpt-transfer/report.pdf",
+                "path": "/home/ubuntu/report.pdf",
                 "bytes": 4,
                 "content_base64": "JVBERg==",
             }
 
         with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
-            result = asyncio.run(server.get_file(machine="oracle", path="report.pdf"))
+            result = asyncio.run(server.get_file(machine="oracle", path="/home/ubuntu/report.pdf"))
 
         self.assertFalse(result.is_error)
         self.assertEqual(len(result.content), 1)
         embedded = result.content[0]
         self.assertEqual(embedded.type, "resource")
-        self.assertEqual(embedded.resource.uri, "aiva-file://oracle/tmp/aiva-chatgpt-transfer/report.pdf")
+        self.assertEqual(embedded.resource.uri, "aiva-file://oracle/home/ubuntu/report.pdf")
         self.assertEqual(embedded.resource.mime_type, "application/pdf")
         self.assertEqual(embedded.resource.blob, "JVBERg==")
         self.assertEqual(embedded.resource.meta["filename"], "report.pdf")
@@ -67,20 +67,31 @@ class GetFileTests(unittest.TestCase):
         self.assertEqual(result.content[0].type, "text")
         self.assertIn("missing", result.content[0].text)
 
-    def test_get_file_rejects_unstaged_absolute_path_without_dispatch(self) -> None:
+    def test_get_file_uses_same_normal_path_semantics_as_read_file(self) -> None:
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool, args), ("laptop", "get_file", {"path": "~/Documents/report.pdf"}))
+            return {
+                "ok": True,
+                "path": "/Users/mikeshaffer/Documents/report.pdf",
+                "bytes": 4,
+                "content_base64": "JVBERg==",
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.get_file(machine="laptop", path="~/Documents/report.pdf"))
+
+        self.assertFalse(result.is_error)
+        embedded = result.content[0]
+        self.assertEqual(embedded.type, "resource")
+        self.assertEqual(embedded.resource.uri, "aiva-file://laptop/Users/mikeshaffer/Documents/report.pdf")
+        self.assertEqual(embedded.resource.mime_type, "application/pdf")
+
+    def test_get_file_rejects_empty_path_without_dispatch(self) -> None:
         with patch.object(server.AGENT_HUB, "dispatch") as dispatch:
-            result = asyncio.run(server.get_file(machine="oracle", path="/etc/passwd"))
+            result = asyncio.run(server.get_file(machine="oracle", path="   "))
 
         self.assertTrue(result.is_error)
-        self.assertIn("only reads files staged under", result.content[0].text)
-        dispatch.assert_not_called()
-
-    def test_get_file_rejects_path_traversal_without_dispatch(self) -> None:
-        with patch.object(server.AGENT_HUB, "dispatch") as dispatch:
-            result = asyncio.run(server.get_file(machine="oracle", path="../secret.txt"))
-
-        self.assertTrue(result.is_error)
-        self.assertIn("path traversal", result.content[0].text)
+        self.assertIn("path is required", result.content[0].text)
         dispatch.assert_not_called()
 
 
