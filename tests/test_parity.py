@@ -1,20 +1,19 @@
 """Parity gate: what this server ADVERTISES over real MCP HTTP must equal the
-Cloudflare Worker's declared tool contract, name for name and schema for schema.
+checked-in reference contract, name for name and schema for schema.
 
-The reference is contract/worker-tools.json (generated from the live Worker by
-scripts/parity-check --refresh; see its _provenance block). PR #5 keeps the
-runtime contract in src/tool_contract.py, independently of this generated
-reference. That is useful: if either the runtime contract or the generated
-reference drifts, advertised != file and this test is red. The sha256 pin
-(contract/worker-tools.SHA256) also catches an unreviewed hand edit of the
-generated reference.
+The reference is contract/worker-tools.json (generated from a local boot of
+this repo's server by scripts/parity-check --refresh; see its _provenance
+block). PR #5 keeps the runtime contract in src/tool_contract.py,
+independently of this generated reference. That is useful: if either the
+runtime contract or the generated reference drifts, advertised != file and
+this test is red. The sha256 pin (contract/worker-tools.SHA256) also catches
+an unreviewed hand edit of the generated reference.
 
 A green run here means: pin holds and the server actually advertises exactly
-the names and input schemas captured from the Worker. The live Worker is
-deliberately NOT contacted:
-this gate runs with AIVA_MCP_URL dead (see conftest) so it can never pass by
-asking Cloudflare. Freshness vs the live Worker is `parity-check --live`'s
-job, run where a token exists.
+the names and input schemas captured in the file. The network is deliberately
+NOT contacted: this gate runs with AIVA_MCP_URL dead (see conftest) so it can
+never pass by asking some remote deployment. Freshness vs a RUNNING server is
+`parity-check --live [URL]`'s job, run where a token exists.
 """
 
 from __future__ import annotations
@@ -59,13 +58,13 @@ def schema_diff(name: str, advertised: Any, reference: Any, path: str = "") -> l
         for key in sorted(set(advertised) | set(reference)):
             here = f"{path}.{key}" if path else key
             if key not in advertised:
-                diffs.append(f"{name}{path and '.'}{here}: missing from ADVERTISED (Worker declares it)")
+                diffs.append(f"{name}{path and '.'}{here}: missing from ADVERTISED (contract declares it)")
             elif key not in reference:
-                diffs.append(f"{name}.{here}: EXTRA in ADVERTISED (Worker does not declare it)")
+                diffs.append(f"{name}.{here}: EXTRA in ADVERTISED (contract does not declare it)")
             else:
                 diffs.extend(schema_diff(name, advertised[key], reference[key], here))
     elif advertised != reference:
-        diffs.append(f"{name}{('.' + path) if path else ''}: advertised={json.dumps(advertised, sort_keys=True)} worker={json.dumps(reference, sort_keys=True)}")
+        diffs.append(f"{name}{('.' + path) if path else ''}: advertised={json.dumps(advertised, sort_keys=True)} contract={json.dumps(reference, sort_keys=True)}")
     return diffs
 
 
@@ -79,22 +78,22 @@ async def test_advertised_tools_match_worker_contract_exactly():
     diffs: list[str] = []
     for name in sorted(set(advertised) | set(contract)):
         if name not in advertised:
-            diffs.append(f"{name}: registered on the Worker but NOT advertised by this server")
+            diffs.append(f"{name}: in the contract but NOT advertised by this server")
             continue
         if name not in contract:
-            diffs.append(f"{name}: advertised by this server but NOT in the Worker contract")
+            diffs.append(f"{name}: advertised by this server but NOT in the contract")
             continue
         diffs.extend(schema_diff(name, advertised[name], contract[name]))
 
     assert not diffs, (
-        "Oracle tool contract drifted from the Cloudflare Worker contract "
+        "Oracle tool contract drifted from the checked-in reference contract "
         f"({len(diffs)} difference(s)):\n  " + "\n  ".join(diffs[:40])
     )
 
 
 @pytest.mark.asyncio
 async def test_machine_is_required_on_every_machine_backed_tool():
-    """The Worker contract requires `machine` on all 11 machine-backed tools.
+    """The contract requires `machine` on all 11 machine-backed tools.
     Advertised parity covers the schema; THIS test proves call-time validation
     enforces it, so a client that omits machine gets an error, not a default."""
     contract = load_contract()
@@ -115,6 +114,6 @@ async def test_machine_is_required_on_every_machine_backed_tool():
                 args = {"skill_name": "start-here"}
             _, is_error = await rig.call_tool(tool, args)  # deliberately NO machine
             assert is_error, (
-                f"{tool} accepted a call without `machine`; the Worker contract "
+                f"{tool} accepted a call without `machine`; the contract "
                 "requires it, so validation must reject it"
             )

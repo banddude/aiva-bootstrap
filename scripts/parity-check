@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Prove the Oracle MCP server's tool contract matches the Cloudflare Worker's.
+"""Prove the Oracle MCP server's tool contract matches the checked-in reference.
 
 Parity is measured on NAMES and INPUT SCHEMAS, exactly, against the checked-in
-reference contract (contract/worker-tools.json), which is generated from the
-live Worker and pinned by a sha256 (contract/worker-tools.SHA256). The server
-loads that same file at startup, so the gate closes the loop:
+reference contract (contract/worker-tools.json), which is generated from a
+local boot of this repo's server and pinned by a sha256
+(contract/worker-tools.SHA256). The server loads that same file at startup, so
+the gate closes the loop:
 
   file (pinned)  ==  what the server advertises  ==  what clients bind to
 
@@ -20,24 +21,25 @@ Modes:
                      Cloudflare, so it cannot pass by asking the Worker.
   --oracle-url URL   Instead of booting in-process, fetch tools/list from a
                      RUNNING server over HTTP (e.g. the production Oracle).
-  --live [URL...]    Also fetch the live Worker's tools/list and require the
-                     contract file to still match it (staleness gate). Checks
-                     every URL given; defaults to both known production routes,
-                     which must also agree with each other (split-deploy
-                     detection). Requires AIVA_MCP_TOKEN or --token-file. The
-                     token is never printed, logged, or written anywhere.
-  --refresh          Fetch the live Worker contract and REGENERATE the contract
-                     file and its pin. The only supported way to change the
-                     contract. Refuses when the Worker is unreachable or its
-                     routes disagree. Run it, commit BOTH files together.
+  --live [URL...]    Also fetch tools/list over HTTP from the given routes and
+                     require the contract file to still match them (staleness
+                     gate). A leftover from the retired Cloudflare Worker era,
+                     kept for checking any RUNNING deployment (e.g. production
+                     Oracle) against the file. Requires AIVA_MCP_TOKEN or
+                     --token-file. The token is never printed, logged, or
+                     written anywhere.
+  --refresh          Boot this repo's server in-process and REGENERATE the
+                     contract file and its pin from what it advertises. The
+                     only supported way to change the contract. Run it, commit
+                     BOTH files together.
 
 Exit codes: 0 parity holds; 1 parity broken, the pin does not match, or a
 needed endpoint was unreachable (a check that cannot run is a failed check,
 not a skipped one); 2 usage error.
 
-Built for the Cloudflare-removal transition. When the Worker is retired,
-retire --live and --refresh with it; the contract file becomes the sole truth
-and the pin becomes its integrity record.
+The reference used to be fetched from the Cloudflare Worker; the Worker is
+retired and the Python server is the contract's source of truth. --refresh
+regenerates from a local boot of that server.
 """
 
 from __future__ import annotations
@@ -88,7 +90,7 @@ def verify_pin() -> str | None:
     if pinned != digest:
         return (
             f"{CONTRACT_PATH.name} changed without its pin (pinned={pinned[:16]}..., "
-            f"actual={digest[:16]}...). If the Worker contract really changed, regenerate "
+            f"actual={digest[:16]}...). If the server's tool contract really changed, regenerate "
             "BOTH files with: scripts/parity-check --refresh"
         )
     return None
@@ -144,9 +146,9 @@ def diff_contract(advertised: dict[str, dict[str, Any]], contract: dict[str, dic
 # --- local boot ----------------------------------------------------------------
 
 
-async def boot_local_tools() -> dict[str, dict[str, Any]]:
-    """Import this repo's server in an ISOLATED environment and read its
-    advertised tools the same way the transport serializes them."""
+async def _boot_local_server() -> list[Any]:
+    """Import this repo's server in an ISOLATED environment and return its
+    registered tools the same way the transport serializes them."""
     tmp = tempfile.mkdtemp(prefix="parity-")
     env_backup = dict(os.environ)
     try:
@@ -166,14 +168,24 @@ async def boot_local_tools() -> dict[str, dict[str, Any]]:
         sys.path.insert(0, str(ROOT / "src"))
         import server  # noqa: PLC0415
 
-        tools = await server.mcp.list_tools()
-        return {t.name: t.input_schema for t in tools}
+        return list(await server.mcp.list_tools())
     finally:
         os.environ.clear()
         os.environ.update(env_backup)
         if str(ROOT / "src") in sys.path:
             sys.path.remove(str(ROOT / "src"))
         sys.modules.pop("server", None)
+
+
+async def boot_local_tools() -> dict[str, dict[str, Any]]:
+    tools = await _boot_local_server()
+    return {t.name: t.input_schema for t in tools}
+
+
+async def boot_local_full_tools() -> dict[str, dict[str, dict[str, Any]]]:
+    """Same shape --refresh writes to the contract file: description + schema."""
+    tools = await _boot_local_server()
+    return {t.name: {"description": t.description or "", "inputSchema": t.input_schema} for t in tools}
 
 
 def _resolve_token(args: argparse.Namespace, purpose: str) -> str:
@@ -193,40 +205,55 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", nargs="*", default=None, metavar="URL",
                         help="also verify the contract file against the live Worker (defaults to both known routes)")
     parser.add_argument("--refresh", action="store_true",
-                        help="fetch the live Worker contract and REGENERATE contract/worker-tools.json "
-                        "and its hash pin; the only supported way to change the contract")
+                        help="boot this repo's server in-process and REGENERATE contract/worker-tools.json "
+                        "and its hash pin from what it advertises; the only supported way to change the contract")
     parser.add_argument("--token-file", default=os.path.expanduser("~/.aiva/agent/token"))
     args = parser.parse_args(argv)
 
     failures: list[str] = []
 
-    # --- refresh: regenerate the contract from the live Worker -----------------
+    # --- refresh: regenerate the contract from a local boot of this repo -------
     if args.refresh:
-        urls = args.live or DEFAULT_LIVE_URLS
-        token = _resolve_token(args, "--refresh")
-        if not token:
+        try:
+            tools = asyncio.run(boot_local_full_tools())
+        except Exception as exc:  # noqa: BLE001
+            print(f"parity-check: FAILED: could not boot this repo's server: {exc}")
             return 1
-        fetched: dict[str, dict[str, dict[str, Any]]] = {}
-        for url in urls:
-            try:
-                fetched[url] = fetch_full_tools(url, token)
-            except Exception as exc:  # noqa: BLE001
-                print(f"parity-check: FAILED: worker[{url}] unreachable: {exc}")
-                return 1
-        schemas = {url: {n: s["inputSchema"] for n, s in t.items()} for url, t in fetched.items()}
-        if len({json.dumps(s, sort_keys=True) for s in schemas.values()}) != 1:
-            print("parity-check: FAILED: live Worker routes disagree with each other; "
-                  "refusing to refresh the contract from a split deploy")
-            return 1
-        tools = fetched[urls[0]]
+
+        # Say exactly what moved, so the commit that carries a refresh is
+        # reviewable without diffing JSON by hand.
+        try:
+            previous = load_contract()
+            moved = sorted(
+                name
+                for name in set(previous) | set(tools)
+                if previous.get(name) != tools.get(name, {}).get("inputSchema")
+            )
+        except Exception:  # noqa: BLE001 - a missing/unreadable old file is not fatal for a refresh
+            moved = []
+        if moved:
+            print(f"parity-check: inputSchema CHANGED for: {', '.join(moved)}")
+        else:
+            print("parity-check: every inputSchema unchanged")
+
+        commit = "unknown commit"
+        try:
+            import subprocess  # noqa: PLC0415
+
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except Exception:  # noqa: BLE001 - not in a git tree: still refresh, say so honestly
+            pass
+
         provenance = {
-            "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker.",
-            "refreshed_from": ", ".join(urls),
-            "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
+            "what": "Reference tool contract: the AIVA MCP tools as advertised by the Python MCP server (src/server.py).",
+            "refreshed_from": f"local boot of this repo's server at commit {commit}",
+            "refresh_method": "scripts/parity-check --refresh (in-process boot of this repo's server)",
             "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema "
             "exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
             "rule": "This file is GENERATED. Never edit it by hand. Regenerate with "
-            "scripts/parity-check --refresh, only when the Worker contract really changed, "
+            "scripts/parity-check --refresh when the server's tools change, "
             "and commit the file and its pin together.",
         }
         CONTRACT_PATH.write_text(
@@ -234,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         CONTRACT_PIN_PATH.write_text(hashlib.sha256(canonical_tools_json(tools)).hexdigest() + "\n", encoding="utf-8")
-        print(f"parity-check: refreshed contract/worker-tools.json and its pin from {urls[0]} ({len(tools)} tools)")
+        print(f"parity-check: refreshed contract/worker-tools.json and its pin from a local boot ({len(tools)} tools, commit {commit[:12]})")
         return 0
 
     # --- pin: the file must be the generated one, not hand-edited --------------

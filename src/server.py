@@ -65,9 +65,6 @@ HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 STATE = Path(os.environ.get("AIVA_STATE", HOME / "state")).resolve()
 HOST = os.environ.get("AIVA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
-CHATGPT_TRANSFER_ROOT = PurePosixPath(
-    os.environ.get("AIVA_CHATGPT_TRANSFER_ROOT", "/tmp/aiva-chatgpt-transfer")
-)
 READ_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 STATE.mkdir(parents=True, exist_ok=True)
@@ -252,27 +249,6 @@ def _validated_image(blob: Any, expected_mime: str, reported_bytes: Any = None) 
     if actual_mime != expected_mime:
         raise ValueError(f"image content type {actual_mime} does not match the file extension ({expected_mime})")
     return raw, actual_mime
-
-
-def _staged_transfer_path(path: str) -> str:
-    value = path.strip()
-    if not value:
-        raise ValueError("path must name a staged file")
-
-    raw = PurePosixPath(value)
-    candidate = raw if raw.is_absolute() else CHATGPT_TRANSFER_ROOT / raw
-    if ".." in candidate.parts:
-        raise ValueError("path traversal is not allowed")
-
-    try:
-        relative = candidate.relative_to(CHATGPT_TRANSFER_ROOT)
-    except ValueError as exc:
-        raise ValueError(
-            f"get_file only reads files staged under {CHATGPT_TRANSFER_ROOT}"
-        ) from exc
-    if not relative.parts:
-        raise ValueError("path must name a file inside the staged transfer directory")
-    return str(candidate)
 
 
 async def _dispatch_sync(machine: str, tool: str, args: dict[str, Any]) -> CallToolResult:
@@ -463,7 +439,12 @@ async def read_image(*, machine: Machine, path: str) -> CallToolResult:
     except ValueError as exc:
         return _result({"ok": False, "error": str(exc)})
 
-    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": source_path})
+    # max_bytes travels to the machine agent so an oversized image is refused
+    # THERE, before anything is read off disk. _validated_image below stays as
+    # the second line of defense against a lying or older agent.
+    result = await AGENT_HUB.dispatch(
+        machine, "get_file", {"path": source_path, "max_bytes": READ_IMAGE_MAX_BYTES}
+    )
     if not isinstance(result, dict) or result.get("ok") is False:
         return _result(result)
 
