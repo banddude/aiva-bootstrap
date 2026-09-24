@@ -107,12 +107,43 @@ class ReadImageTests(unittest.TestCase):
         self.assertEqual(image.mime_type, "image/png")
         self.assertEqual(image.data, base64.b64encode(png).decode())
 
-    def test_read_image_rejects_paths_outside_tmp_without_dispatch(self) -> None:
-        with patch.object(server.AGENT_HUB, "dispatch") as dispatch:
-            result = asyncio.run(server.read_image(machine="oracle", path="/etc/not-an-image.png"))
-        dispatch.assert_not_called()
-        self.assertTrue(result.is_error)
-        self.assertIn("under /tmp", result.content[0].text)
+    def test_read_image_uses_same_normal_path_semantics_as_read_file(self) -> None:
+        jpeg = bytes.fromhex("ffd8ff") + b"test"
+
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool, args), ("laptop", "get_file", {"path": "~/Pictures/example.jpg"}))
+            return {
+                "ok": True,
+                "path": "/Users/mike/Pictures/example.jpg",
+                "bytes": len(jpeg),
+                "content_base64": base64.b64encode(jpeg).decode(),
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.read_image(machine="laptop", path="~/Pictures/example.jpg"))
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.content[0].type, "image")
+        self.assertEqual(result.content[0].mime_type, "image/jpeg")
+
+    def test_read_image_accepts_file_url_outside_tmp(self) -> None:
+        png = bytes.fromhex("89504e470d0a1a0a") + b"test"
+
+        async def dispatch(machine, tool, args):
+            self.assertEqual(args, {"path": "/Users/mike/Desktop/example.png"})
+            return {
+                "ok": True,
+                "bytes": len(png),
+                "content_base64": base64.b64encode(png).decode(),
+            }
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(
+                server.read_image(machine="laptop", path="file:///Users/mike/Desktop/example.png")
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.content[0].mime_type, "image/png")
 
     def test_read_image_rejects_non_image_content(self) -> None:
         raw = b"not an image"

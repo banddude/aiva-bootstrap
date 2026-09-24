@@ -68,7 +68,6 @@ PORT = int(os.environ.get("PORT", "8765"))
 CHATGPT_TRANSFER_ROOT = PurePosixPath(
     os.environ.get("AIVA_CHATGPT_TRANSFER_ROOT", "/tmp/aiva-chatgpt-transfer")
 )
-READ_IMAGE_ROOT = PurePosixPath("/tmp")
 READ_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 STATE.mkdir(parents=True, exist_ok=True)
@@ -213,16 +212,10 @@ def _read_image_source(path: str) -> tuple[str, str]:
             raise ValueError("file:// image URLs cannot include query strings or fragments")
         value = unquote(parsed.path)
 
+    # Match read_file/get_file path semantics. The selected machine agent owns
+    # path expansion (including ~/...) and filesystem access. This wrapper only
+    # validates that the requested file is an image type we can safely return.
     candidate = PurePosixPath(value)
-    if not candidate.is_absolute():
-        raise ValueError("read_image requires an absolute path under /tmp")
-    if ".." in candidate.parts:
-        raise ValueError("path traversal is not allowed")
-    try:
-        candidate.relative_to(READ_IMAGE_ROOT)
-    except ValueError as exc:
-        raise ValueError("read_image only reads files under /tmp") from exc
-
     suffix = candidate.suffix.lower()
     if suffix == ".png":
         mime_type = "image/png"
@@ -233,7 +226,7 @@ def _read_image_source(path: str) -> tuple[str, str]:
     return str(candidate), mime_type
 
 
-def _validated_image(blob: str, expected_mime: str, reported_bytes: Any = None) -> tuple[bytes, str]:
+def _validated_image(blob: Any, expected_mime: str, reported_bytes: Any = None) -> tuple[bytes, str]:
     if not isinstance(blob, str):
         raise ValueError("read_image response did not contain content_base64")
     try:
@@ -457,9 +450,9 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
 
 @mcp.tool(
     description=(
-        "Read a JPEG or PNG from /tmp on the chosen machine as native MCP image content. "
-        "Use this for visual inspection without the generic file-transfer path. "
-        "Accepts absolute paths and local file:// URLs, and refuses non-images or images over 10 MiB."
+        "Read a JPEG or PNG from the chosen machine as native MCP image content. "
+        "Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths, "
+        "plus local file:// URLs. Refuses non-images or images over 10 MiB."
     ),
     annotations=READ_ONLY,
     structured_output=False,
