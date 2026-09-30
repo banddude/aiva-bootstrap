@@ -60,6 +60,7 @@ from oauth_compat import (
     token_route,
 )
 from tool_contract import WORKER_TOOL_SCHEMAS
+from voice_bridge import VOICE_DESCRIPTION, speak_and_wait
 
 HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 STATE = Path(os.environ.get("AIVA_STATE", HOME / "state")).resolve()
@@ -517,6 +518,19 @@ async def notify(
         else:
             channels.append({"channel": channel, "ok": False, "error": str(result.get("error") or "Oracle spool write failed")})
     return _result(summarize(normalized, source, channels))
+
+
+@mcp.tool(description=VOICE_DESCRIPTION, annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True), structured_output=False)
+async def voice_speak_and_wait(
+    *,
+    sessionId: Annotated[str, Field(min_length=1, max_length=128)],
+    turnId: Annotated[str, Field(min_length=1, max_length=128)],
+    text: Annotated[str, Field(min_length=1, max_length=8000)],
+    purpose: Annotated[str | None, Field(min_length=1, max_length=400)] = None,
+    waitSeconds: Annotated[int | None, Field(ge=1, le=25)] = None,
+    end: bool | None = None,
+) -> CallToolResult:
+    return _result(await speak_and_wait(_clean_args(sessionId=sessionId, turnId=turnId, text=text, purpose=purpose, waitSeconds=waitSeconds, end=end)))
 
 
 def _apply_worker_tool_schemas() -> None:

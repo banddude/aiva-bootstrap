@@ -99,3 +99,22 @@ python scripts/parity-check --refresh   # regenerate contract + pin from the liv
 python scripts/parity-check --live      # verify the file is not stale vs the live Worker
 ```
 
+
+## OfficeAdmin voice bridge (Oracle)
+
+`voice_speak_and_wait(sessionId, turnId, text, purpose?, waitSeconds?, end?)`
+connects the invoking agent directly to the existing iPhone voice conversation.
+Call only after an explicit request to call; a capability question does not authorize ringing.
+Oracle posts to `/api/v1/aiva/voice-conversation/speak-and-wait` on the local
+OfficeAdmin origin using its existing owner credential. The same session/turn pair
+resumes an unfinished turn without repeating speech. Returned transcript and
+interrupted flag belong to the invoking agent, with no notification handoff.
+
+Defaults: origin `http://127.0.0.1:3200/api/v1`, credential file
+`/home/ubuntu/.aiva/state/officeadmin/oracle-direct-key`. Deployments may set
+`AIVA_OFFICEADMIN_LOCAL_URL` and `AIVA_OFFICEADMIN_KEY_FILE`. Credentials never
+appear in tool arguments or results. Missing credentials fail explicitly.
+
+After deploying, refresh the AIVA app tool catalog in the client. Verify tools/list
+contains `voice_speak_and_wait`; use an invalid REST body to verify auth/routing
+without ringing. Live speaking/interruption testing requires Mike to request a call.

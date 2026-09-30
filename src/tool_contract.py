@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from voice_bridge import VOICE_SCHEMA
+
 MACHINES = ["laptop", "oracle", "mac-server"]
 MACHINE_PROP = {
     "type": "string",
@@ -16,6 +18,7 @@ def _obj(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 
 WORKER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "voice_speak_and_wait": VOICE_SCHEMA,
     "run_command": _obj(
         {
             "machine": MACHINE_PROP,
