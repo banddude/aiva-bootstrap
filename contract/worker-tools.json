@@ -2,7 +2,7 @@
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
     "refresh_method": "scripts/parity-check --refresh (in-process boot of this repo's server)",
-    "refreshed_from": "local boot of this repo's server at commit 04c39d83488ec04b9a7a1095a11660f74924f409",
+    "refreshed_from": "local boot of this repo's server at commit eaf6f234375ac7c914c06cfdfa04ef26ca994f4e",
     "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh when the server's tools change, and commit the file and its pin together.",
     "what": "Reference tool contract: the AIVA MCP tools as advertised by the Python MCP server (src/server.py)."
   },
@@ -322,6 +322,53 @@
           "machine",
           "path",
           "content_base64"
+        ],
+        "type": "object"
+      }
+    },
+    "voice_speak_and_wait": {
+      "description": "Call Mike through the OfficeAdmin iPhone app, speak one line, and wait for his spoken reply. Use only when Mike requests a call or authorizes a voice conversation; capability questions do not authorize ringing. The invoking agent remains the conversation brain. Returns transcript and interrupted when finalized. Keep sessionId stable; use a fresh turnId per new line. On timedOut or a transport error, resume with the SAME sessionId and turnId so the phone does not speak twice. Hangup ends this conversation only, not other work. end=true ends the call after the turn. No machine argument is needed: Oracle bridges directly to OfficeAdmin.",
+      "inputSchema": {
+        "properties": {
+          "end": {
+            "description": "End the call after this turn, without cancelling other work.",
+            "type": "boolean"
+          },
+          "purpose": {
+            "description": "Visible purpose on the initial call screen.",
+            "maxLength": 400,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Stable identity of this agent conversation.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "description": "Plain text to speak aloud.",
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "turnId": {
+            "description": "Fresh turn identity; reuse the same value to resume a wait.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "waitSeconds": {
+            "description": "Bounded wait, default 20 seconds.",
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessionId",
+          "turnId",
+          "text"
         ],
         "type": "object"
       }

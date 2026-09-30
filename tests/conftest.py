@@ -30,6 +30,8 @@ _SESSION_TMP = Path(tempfile.mkdtemp(prefix="aiva-bootstrap-test-"))
 
 # --- environment, set once, before any src import ---------------------------------
 
+os.environ["AIVA_OFFICEADMIN_LOCAL_URL"] = DEAD_WORKER_URL + "/api/v1"
+os.environ["AIVA_OFFICEADMIN_KEY_FILE"] = str(_SESSION_TMP / "absent-voice-key")
 os.environ["AIVA_MCP_URL"] = DEAD_WORKER_URL  # the law (see module docstring)
 os.environ["MCP_TOKEN"] = "aiva-ci-test-token"  # test-only value, not a secret
 os.environ["AIVA_HOME"] = str(_SESSION_TMP / "home")
