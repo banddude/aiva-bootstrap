@@ -38,10 +38,17 @@ python3 -m venv "$AIVA_HOME/venv"
 "$AIVA_HOME/venv/bin/pip" install --upgrade pip
 "$AIVA_HOME/venv/bin/pip" install -r "$AIVA_HOME/server/requirements.txt"
 
+TOKEN_FILE="$AIVA_HOME/admin-token"
+python3 "$SOURCE_DIR/scripts/provision-admin-token.py" \\
+  --home "$AIVA_HOME" \\
+  --owner "$AIVA_NAME" \\
+  --token-file "$TOKEN_FILE"
+
 cat >"$AIVA_HOME/.env" <<ENV
 AIVA_HOME=$AIVA_HOME
 AIVA_WORKSPACE=$AIVA_HOME/workspace
 AIVA_SKILLS=$AIVA_HOME/skills
+AIVA_TOKEN_FILE=$TOKEN_FILE
 PORT=$AIVA_PORT
 ENV
 chmod 600 "$AIVA_HOME/.env"
