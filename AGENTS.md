@@ -11,9 +11,10 @@ Install a personal remote MCP server on the current fresh Oracle Ubuntu VM.
 4. Run `sudo /opt/aiva/finish-setup.sh` after approval.
 5. Record the exact final MCP URL it prints. Do not shorten or alter it.
 6. Verify `systemctl is-active aiva-mcp` returns `active`.
-7. Add the final URL to ChatGPT as a custom MCP app and scan tools.
-8. From ChatGPT, test `health`, `run_command("whoami && hostname && pwd")`, and `get_skill("start-here")`.
-9. Start onboarding and update `start-here` only with information confirmed by this user.
+7. Add the final URL to ChatGPT as a custom MCP app. When the OAuth approval page opens, have the owner run `sudo cat /opt/aiva/admin-token` locally on Oracle and paste that value only into the approval form. Never ask them to paste the token into chat or logs.
+8. Scan tools after authorization.
+9. From ChatGPT, test `health`, `run_command("whoami && hostname && pwd")`, and `get_skill("start-here")`.
+10. Start onboarding and update `start-here` only with information confirmed by this user.
 
 ## Rules
 
