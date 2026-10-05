@@ -18,7 +18,13 @@ Tailscale requires one browser approval. Open the login URL printed by the insta
 sudo /opt/aiva/finish-setup.sh
 ```
 
-It prints the final MCP URL. Paste that URL into ChatGPT when creating a custom MCP app, scan the tools, and call `health`.
+It prints the final MCP URL. Paste that URL into ChatGPT when creating a custom MCP app. The first connection opens an OAuth approval page. On the Oracle VM, retrieve the locally stored admin token with:
+
+```bash
+sudo cat /opt/aiva/admin-token
+```
+
+Paste that token only into the OAuth approval form, then scan the tools and call `health`. Do not paste the token into chat, logs, issues, or a public URL. The installer creates the token once with mode `0600` and reuses it on reruns; it does not rotate it silently.
 
 ## Give this repository to an agent
 
