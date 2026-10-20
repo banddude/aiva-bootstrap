@@ -97,5 +97,44 @@ class NotifyTests(unittest.TestCase):
         send.assert_called_once_with("test", "agent")
 
 
+class NotifyDevTests(unittest.TestCase):
+    def test_notify_dev_spools_to_dev_bridge(self) -> None:
+        written: dict[str, str] = {}
+
+        async def dispatch(machine, tool, args):
+            self.assertEqual((machine, tool), ("oracle", "write_file"))
+            written[args["path"]] = args["content"]
+            return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"AIVA_CAO_DEV_BRIDGE_STATE_DIR": str(root)}, clear=False):
+                with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+                    result = asyncio.run(server.notify_dev(message="hello dev", from_="chat-agent"))
+        self.assertFalse(result.is_error)
+        self.assertEqual(len(written), 1)
+        path, content = next(iter(written.items()))
+        self.assertTrue(path.startswith(str(root / "pending") + "/"))
+        body = json.loads(content)
+        self.assertEqual(body["source"], "aiva-inbox")
+        self.assertIn("from=chat-agent", body["message"])
+        self.assertTrue(body["message"].endswith("\nhello dev"))
+
+    def test_notify_dev_reports_spool_failure(self) -> None:
+        async def dispatch(machine, tool, args):
+            return {"ok": False, "error": "hub down"}
+
+        with patch.object(server.AGENT_HUB, "dispatch", side_effect=dispatch):
+            result = asyncio.run(server.notify_dev(message="hello"))
+        self.assertTrue(result.is_error)
+        self.assertIn("hub down", result.content[0].text)
+
+    def test_notify_dev_requires_message(self) -> None:
+        result = asyncio.run(server.notify_dev(message="   "))
+        self.assertTrue(result.is_error)
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

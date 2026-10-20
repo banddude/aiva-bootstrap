@@ -1,14 +1,15 @@
 {
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
-    "refresh_method": "scripts/parity-check --refresh (live MCP tools/list)",
-    "refreshed_from": "https://aiva-mcp.mikejshaffer.workers.dev, https://mcp.officeadmin.io",
-    "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh, only when the Worker contract really changed, and commit the file and its pin together.",
-    "what": "Reference tool contract: the AIVA MCP tools as declared by the Cloudflare Worker."
+    "regenerated": "2026-10-20 by scripts/regen-contract.py",
+    "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/regen-contract.py after any tool-surface change and commit the file and its pin together.",
+    "source": "local Oracle MCP server boot (tests rig, in-process, no real machine)",
+    "transition_note": "During the Cloudflare-removal transition the cloud Worker lags this surface; notify_dev, read_image and voice_speak_and_wait are local-only. scripts/parity-check --refresh (Worker) is retired as the contract source; this script replaces it.",
+    "what": "Reference tool contract: the AIVA MCP tools as advertised by this repo's local Oracle MCP server (the ChatGPT connector surface, mcp.officeadmin.io)."
   },
   "tools": {
     "get_file": {
-      "description": "Fetch a file (including binary) from the chosen machine, returned as base64.",
+      "description": "Transfer a file (including binary) from the chosen machine. Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths. Returns the file as an embedded MCP resource with its MIME type preserved.",
       "inputSchema": {
         "properties": {
           "machine": {
@@ -157,7 +158,7 @@
       }
     },
     "notify": {
-      "description": "Send a notification to AIVA or to Mike. Takes no machine: delivery happens in the cloud, so it works even when every machine is asleep. target 'aiva' pushes the message into the AIVA session inbox, and that is where routine status, progress, and finished background work belong. target 'mike' sends a REAL iMessage to Mike Shaffer's personal phone, so use it only for something he needs to see right now, such as work that is blocked on his decision, and never for routine status. target 'all' sends both. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+      "description": "Send a notification to AIVA or to Mike. Takes no machine: target 'aiva' and the internal 'dev' compatibility target use the local CAO spool, while target 'mike' calls api.sendblue.co directly. target 'all' sends to AIVA and Mike. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -185,6 +186,25 @@
         "type": "object"
       }
     },
+    "notify_dev": {
+      "description": "Send a message to Dev, your parent and supervisor agent (the dev CAO session). Use this to report results, hand work back, ask for review, or say you are finished. Deliveries land in Dev's CAO inbox on the local CAO spool with your from label attached. Never use this to reach Mike.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "description": "Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The message for Dev. Write it so it stands alone, because the reader has none of your context.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
     "read_file": {
       "description": "Read a UTF-8 text file from the chosen machine. Optional line offset/limit.",
       "inputSchema": {
@@ -203,6 +223,30 @@
           },
           "offset": {
             "type": "number"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "read_image": {
+      "description": "Read a JPEG or PNG from the chosen machine as native MCP image content. Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths, plus local file:// URLs. Refuses non-images or images over 10 MiB.",
+      "inputSchema": {
+        "properties": {
+          "machine": {
+            "description": "Which machine to run on: laptop, oracle, or mac-server.",
+            "enum": [
+              "laptop",
+              "oracle",
+              "mac-server"
+            ],
+            "type": "string"
           },
           "path": {
             "type": "string"
@@ -298,6 +342,53 @@
           "machine",
           "path",
           "content_base64"
+        ],
+        "type": "object"
+      }
+    },
+    "voice_speak_and_wait": {
+      "description": "Call Mike through the OfficeAdmin iPhone app, speak one line, and wait for his spoken reply. Use only when Mike requests a call or authorizes a voice conversation; capability questions do not authorize ringing. The invoking agent remains the conversation brain. Returns transcript and interrupted when finalized. Keep sessionId stable; use a fresh turnId per new line. On timedOut or a transport error, resume with the SAME sessionId and turnId so the phone does not speak twice. Hangup ends this conversation only, not other work. end=true ends the call after the turn. No machine argument is needed: Oracle bridges directly to OfficeAdmin.",
+      "inputSchema": {
+        "properties": {
+          "end": {
+            "description": "End the call after this turn, without cancelling other work.",
+            "type": "boolean"
+          },
+          "purpose": {
+            "description": "Visible purpose on the initial call screen.",
+            "maxLength": 400,
+            "minLength": 1,
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "Stable identity of this agent conversation.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "text": {
+            "description": "Plain text to speak aloud.",
+            "maxLength": 8000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "turnId": {
+            "description": "Fresh turn identity; reuse the same value to resume a wait.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "waitSeconds": {
+            "description": "Bounded wait, default 20 seconds.",
+            "maximum": 25,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessionId",
+          "turnId",
+          "text"
         ],
         "type": "object"
       }

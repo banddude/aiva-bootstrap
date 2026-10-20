@@ -1,8 +1,11 @@
 """Parity gate: what this server ADVERTISES over real MCP HTTP must equal the
-Cloudflare Worker's declared tool contract, name for name and schema for schema.
+reference contract, name for name and schema for schema.
 
-The reference is contract/worker-tools.json (generated from the live Worker by
-scripts/parity-check --refresh; see its _provenance block). PR #5 keeps the
+The reference is contract/worker-tools.json (generated from a real in-process
+server boot by scripts/regen-contract.py; see its _provenance block). Since the
+Cloudflare-removal transition the reference surface is this server itself, not
+the cloud Worker, which no longer tracks local-only tools (notify_dev,
+read_image, voice_speak_and_wait). PR #5 keeps the
 runtime contract in src/tool_contract.py, independently of this generated
 reference. That is useful: if either the runtime contract or the generated
 reference drifts, advertised != file and this test is red. The sha256 pin
@@ -48,7 +51,7 @@ def test_contract_file_matches_its_pin():
     pinned = PIN_PATH.read_text(encoding="utf-8").strip()
     assert pinned == digest, (
         "contract/worker-tools.json no longer hashes to contract/worker-tools.SHA256. "
-        "Regenerate BOTH with scripts/parity-check --refresh (never hand-edit the contract)"
+        "Regenerate BOTH with scripts/regen-contract.py (never hand-edit the contract)"
     )
 
 
@@ -70,7 +73,7 @@ def schema_diff(name: str, advertised: Any, reference: Any, path: str = "") -> l
 
 
 @pytest.mark.asyncio
-async def test_advertised_tools_match_worker_contract_exactly():
+async def test_advertised_tools_match_reference_contract_exactly():
     contract = load_contract()
     async with Rig() as rig:
         result = await rig.session.list_tools()
@@ -94,12 +97,13 @@ async def test_advertised_tools_match_worker_contract_exactly():
 
 @pytest.mark.asyncio
 async def test_machine_is_required_on_every_machine_backed_tool():
-    """The Worker contract requires `machine` on all 10 machine-backed tools.
+    """The reference contract requires `machine` on all 11 machine-backed tools
+(read_image joined the ten original machine-backed tools).
     Advertised parity covers the schema; THIS test proves call-time validation
     enforces it, so a client that omits machine gets an error, not a default."""
     contract = load_contract()
     machine_backed = [n for n, s in contract.items() if "machine" in s.get("properties", {})]
-    assert len(machine_backed) == 10, f"expected 10 machine-backed tools, contract lists {len(machine_backed)}"
+    assert len(machine_backed) == 11, f"expected 11 machine-backed tools, contract lists {len(machine_backed)}"
 
     async with Rig() as rig:
         await rig.connect_machine()

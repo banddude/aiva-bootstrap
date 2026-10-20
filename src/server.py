@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import uvicorn
 from mcp.server import MCPServer
@@ -15,6 +17,7 @@ from mcp.types import (
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
+    ImageContent,
     TextContent,
     ToolAnnotations,
 )
@@ -57,11 +60,13 @@ from oauth_compat import (
     token_route,
 )
 from tool_contract import WORKER_TOOL_SCHEMAS
+from voice_bridge import VOICE_DESCRIPTION, speak_and_wait
 
 HOME = Path(os.environ.get("AIVA_HOME", "/opt/aiva"))
 STATE = Path(os.environ.get("AIVA_STATE", HOME / "state")).resolve()
 HOST = os.environ.get("AIVA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
+READ_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 STATE.mkdir(parents=True, exist_ok=True)
 OAUTH_COUNTS_AT_BOOT = initialize_store()
@@ -188,6 +193,63 @@ def _result(result: Any) -> CallToolResult:
 
 def _clean_args(**kwargs: Any) -> dict[str, Any]:
     return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def _read_image_source(path: str) -> tuple[str, str]:
+    value = path.strip()
+    if not value:
+        raise ValueError("path is required")
+
+    if "://" in value:
+        parsed = urlparse(value)
+        if parsed.scheme != "file":
+            raise ValueError("read_image only accepts local paths or file:// URLs")
+        if parsed.hostname not in (None, "", "localhost"):
+            raise ValueError("file:// image URLs must refer to the local machine")
+        if parsed.query or parsed.fragment:
+            raise ValueError("file:// image URLs cannot include query strings or fragments")
+        value = unquote(parsed.path)
+
+    # Match read_file/get_file path semantics. The selected machine agent owns
+    # path expansion (including ~/...) and filesystem access. This wrapper only
+    # validates that the requested file is an image type we can safely return.
+    candidate = PurePosixPath(value)
+    suffix = candidate.suffix.lower()
+    if suffix == ".png":
+        mime_type = "image/png"
+    elif suffix in {".jpg", ".jpeg"}:
+        mime_type = "image/jpeg"
+    else:
+        raise ValueError("read_image only supports .png, .jpg, and .jpeg files")
+    return str(candidate), mime_type
+
+
+def _validated_image(blob: Any, expected_mime: str, reported_bytes: Any = None) -> tuple[bytes, str]:
+    if not isinstance(blob, str):
+        raise ValueError("read_image response did not contain content_base64")
+    try:
+        raw = base64.b64decode(blob, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("machine returned invalid base64 image data") from exc
+
+    size = len(raw)
+    try:
+        if reported_bytes is not None:
+            size = max(size, int(reported_bytes))
+    except (TypeError, ValueError):
+        pass
+    if size > READ_IMAGE_MAX_BYTES:
+        raise ValueError(f"image is too large ({size} bytes); read_image limit is {READ_IMAGE_MAX_BYTES} bytes")
+
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        actual_mime = "image/png"
+    elif raw.startswith(b"\xff\xd8\xff"):
+        actual_mime = "image/jpeg"
+    else:
+        raise ValueError("file content is not a supported PNG or JPEG image")
+    if actual_mime != expected_mime:
+        raise ValueError(f"image content type {actual_mime} does not match the file extension ({expected_mime})")
+    return raw, actual_mime
 
 
 async def _dispatch_sync(machine: str, tool: str, args: dict[str, Any]) -> CallToolResult:
@@ -324,12 +386,22 @@ async def get_skill(*, machine: Machine, skill_name: str) -> CallToolResult:
 
 
 @mcp.tool(
-    description="Fetch a file from the chosen machine as an embedded MCP resource with its MIME type preserved.",
+    description=(
+        "Transfer a file (including binary) from the chosen machine. "
+        "Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths. "
+        "Returns the file as an embedded MCP resource with its MIME type preserved."
+    ),
     annotations=READ_ONLY,
     structured_output=False,
 )
 async def get_file(*, machine: Machine, path: str) -> CallToolResult:
-    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": path})
+    # Match read_file/read_image path semantics. The selected machine agent owns
+    # path expansion (including ~/...) and filesystem access.
+    source_path = path.strip()
+    if not source_path:
+        return _result({"ok": False, "error": "path is required"})
+
+    result = await AGENT_HUB.dispatch(machine, "get_file", {"path": source_path})
     if not isinstance(result, dict) or result.get("ok") is False:
         return _result(result)
 
@@ -337,7 +409,7 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
     if not isinstance(blob, str):
         return _result({"ok": False, "error": "get_file response did not contain content_base64"})
 
-    returned_path = str(result.get("path") or path)
+    returned_path = str(result.get("path") or source_path)
     mime_type = mimetypes.guess_type(returned_path)[0] or "application/octet-stream"
     resource_uri = f"aiva-file://{machine}{quote(returned_path, safe='/')}"
     resource = BlobResourceContents(
@@ -351,6 +423,45 @@ async def get_file(*, machine: Machine, path: str) -> CallToolResult:
         },
     )
     return CallToolResult(content=[EmbeddedResource(type="resource", resource=resource)])
+
+
+@mcp.tool(
+    description=(
+        "Read a JPEG or PNG from the chosen machine as native MCP image content. "
+        "Uses the same machine-path semantics as read_file, including normal absolute, relative, and ~/ paths, "
+        "plus local file:// URLs. Refuses non-images or images over 10 MiB."
+    ),
+    annotations=READ_ONLY,
+    structured_output=False,
+)
+async def read_image(*, machine: Machine, path: str) -> CallToolResult:
+    try:
+        source_path, expected_mime = _read_image_source(path)
+    except ValueError as exc:
+        return _result({"ok": False, "error": str(exc)})
+
+    # max_bytes travels to the machine agent so an oversized image is refused
+    # THERE, before anything is read off disk. _validated_image below stays as
+    # the second line of defense against a lying or older agent.
+    result = await AGENT_HUB.dispatch(
+        machine, "get_file", {"path": source_path, "max_bytes": READ_IMAGE_MAX_BYTES}
+    )
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return _result(result)
+
+    try:
+        _, mime_type = _validated_image(
+            result.get("content_base64"),
+            expected_mime,
+            result.get("bytes"),
+        )
+    except ValueError as exc:
+        return _result({"ok": False, "error": str(exc)})
+
+    return CallToolResult(
+        content=[ImageContent(data=result["content_base64"], mime_type=mime_type)],
+        is_error=False,
+    )
 
 
 @mcp.tool(
@@ -407,6 +518,45 @@ async def notify(
         else:
             channels.append({"channel": channel, "ok": False, "error": str(result.get("error") or "Oracle spool write failed")})
     return _result(summarize(normalized, source, channels))
+
+
+@mcp.tool(
+    description="Send a message to Dev, your parent and supervisor agent (the dev CAO session). Use this to report results, hand work back, ask for review, or say you are finished. Deliveries land in Dev's CAO inbox on the local CAO spool with your from label attached. Never use this to reach Mike.",
+    annotations=WRITE_DESTRUCTIVE,
+    structured_output=False,
+)
+async def notify_dev(
+    *,
+    message: str,
+    from_: Annotated[str | None, Field(validation_alias="from")] = None,
+) -> CallToolResult:
+    source = (from_ or "mcp-agent").strip() or "mcp-agent"
+    if not message.strip():
+        return _result({"ok": False, "status": "failed", "error": "'message' is required and cannot be empty"})
+    path, content, inbox_target = make_spool_record("dev", message, source)
+    result = await AGENT_HUB.dispatch(
+        "oracle",
+        "write_file",
+        {"path": str(path), "content": content, "mode": "rewrite", "timeout_seconds": 10},
+    )
+    if result.get("ok"):
+        channels: list[dict[str, Any]] = [{"channel": "dev", "ok": True, "detail": f"queued for {inbox_target} on local CAO spool"}]
+    else:
+        channels = [{"channel": "dev", "ok": False, "error": str(result.get("error") or "Oracle spool write failed")}]
+    return _result(summarize("dev", source, channels))
+
+
+@mcp.tool(description=VOICE_DESCRIPTION, annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True), structured_output=False)
+async def voice_speak_and_wait(
+    *,
+    sessionId: Annotated[str, Field(min_length=1, max_length=128)],
+    turnId: Annotated[str, Field(min_length=1, max_length=128)],
+    text: Annotated[str, Field(min_length=1, max_length=8000)],
+    purpose: Annotated[str | None, Field(min_length=1, max_length=400)] = None,
+    waitSeconds: Annotated[int | None, Field(ge=1, le=25)] = None,
+    end: bool | None = None,
+) -> CallToolResult:
+    return _result(await speak_and_wait(_clean_args(sessionId=sessionId, turnId=turnId, text=text, purpose=purpose, waitSeconds=waitSeconds, end=end)))
 
 
 def _apply_worker_tool_schemas() -> None:
