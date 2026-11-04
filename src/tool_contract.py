@@ -90,13 +90,8 @@ WORKER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         ["machine", "path", "content_base64"],
     ),
-    "notify": _obj(
+    "notify_dev": _obj(
         {
-            "target": {
-                "type": "string",
-                "enum": ["aiva", "mike", "all"],
-                "description": "Who to notify. 'aiva' is the AIVA session inbox and is the right choice for anything routine. 'mike' texts a real person's phone, so reserve it for something he needs to see right now. 'all' sends to both.",
-            },
             "message": {
                 "type": "string",
                 "description": "The notification text. Write it so it stands alone, because the reader has none of your context.",
@@ -106,7 +101,7 @@ WORKER_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Optional source label shown on the notification, for example the agent or job name. Defaults to mcp-agent.",
             },
         },
-        ["target", "message"],
+        ["message"],
     ),
 }
 

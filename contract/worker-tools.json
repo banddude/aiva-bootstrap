@@ -2,7 +2,7 @@
   "_provenance": {
     "gate_scope": "scripts/parity-check and tests/test_parity.py gate on name + inputSchema exactly, and on the sha256 pin in contract/worker-tools.SHA256.",
     "refresh_method": "scripts/parity-check --refresh (in-process boot of this repo's server)",
-    "refreshed_from": "local boot of this repo's server at commit eaf6f234375ac7c914c06cfdfa04ef26ca994f4e",
+    "refreshed_from": "local boot of this repo's server at commit d45fabf28a26d27940a957163b57593cb9d763b4",
     "rule": "This file is GENERATED. Never edit it by hand. Regenerate with scripts/parity-check --refresh when the server's tools change, and commit the file and its pin together.",
     "what": "Reference tool contract: the AIVA MCP tools as advertised by the Python MCP server (src/server.py)."
   },
@@ -156,8 +156,8 @@
         "type": "object"
       }
     },
-    "notify": {
-      "description": "Send a notification to AIVA or to Mike. Takes no machine: target 'aiva' and the internal 'dev' compatibility target use the local CAO spool, while target 'mike' calls api.sendblue.co directly. target 'all' sends to AIVA and Mike. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+    "notify_dev": {
+      "description": "Send a message to Dev, your parent and supervisor agent (the dev CAO session). Use this to report results, hand work back, ask for review, or say you are finished. Deliveries land in Dev's CAO inbox on the local CAO spool with your from label attached. Never use this to reach Mike.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -167,19 +167,9 @@
           "message": {
             "description": "The notification text. Write it so it stands alone, because the reader has none of your context.",
             "type": "string"
-          },
-          "target": {
-            "description": "Who to notify. 'aiva' is the AIVA session inbox and is the right choice for anything routine. 'mike' texts a real person's phone, so reserve it for something he needs to see right now. 'all' sends to both.",
-            "enum": [
-              "aiva",
-              "mike",
-              "all"
-            ],
-            "type": "string"
           }
         },
         "required": [
-          "target",
           "message"
         ],
         "type": "object"

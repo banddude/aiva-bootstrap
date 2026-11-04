@@ -124,3 +124,9 @@ appear in tool arguments or results. Missing credentials fail explicitly.
 After deploying, refresh the AIVA app tool catalog in the client. Verify tools/list
 contains `voice_speak_and_wait`; use an invalid REST body to verify auth/routing
 without ringing. Live speaking/interruption testing requires Mike to request a call.
+
+## Worker reporting
+
+The ChatGPT MCP exposes `notify_dev(message, from)` for reports, questions,
+reviews, milestones and errors. Dev is the worker's parent and supervisor.
+Refresh the connector tool catalog after deploying a tool-surface change.
