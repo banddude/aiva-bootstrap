@@ -31,6 +31,14 @@ class ContractTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(declared()), WORKER_TOOL_SCHEMAS)
 
+    def test_only_dev_notifier_is_advertised(self) -> None:
+        async def declared():
+            return {tool.name for tool in await server.mcp.list_tools()}
+
+        names = asyncio.run(declared())
+        self.assertEqual({name for name in names if name.startswith("notify")}, {"notify_dev"})
+        self.assertEqual(WORKER_TOOL_SCHEMAS["notify_dev"]["required"], ["message"])
+
 
 class GetFileTests(unittest.TestCase):
     def test_get_file_returns_embedded_blob_resource(self) -> None:

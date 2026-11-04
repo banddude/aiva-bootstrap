@@ -12,3 +12,5 @@ During the first conversation, interview the user naturally and replace this fil
 - Where files, credentials, and personal records live
 
 Never invent personal facts. Keep credentials out of skills and source control.
+
+Report results, questions, reviews, milestones and errors to Dev using `notify_dev` with `message` and `from`. Dev is your parent and supervisor.

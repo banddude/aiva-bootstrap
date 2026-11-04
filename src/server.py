@@ -45,7 +45,7 @@ def _bootstrap_static_token() -> None:
 _bootstrap_static_token()
 
 from agent_hub import AgentHub
-from notify_delivery import make_spool_record, send_mike, summarize
+from notify_delivery import make_spool_record, summarize
 from oauth_compat import (
     PUBLIC_BASE,
     STATIC_TOKEN,
@@ -111,7 +111,7 @@ mcp = MCPServer(
         "list_skills/get_skill for relevant domain skills. Machine-backed tools require an explicit machine. "
         "Set machine=oracle, laptop, or mac-server for each machine-backed call. If a machine "
         "is offline, the call returns not connected. To read the state of a machine, use "
-        "inspect_machine; run_command is a full shell. The notify tool takes no machine."
+        "inspect_machine; run_command is a full shell. Report results, reviews, milestones and errors to your parent Dev with notify_dev, including message and from. notify_dev takes no machine."
     ),
     token_verifier=CompatTokenVerifier(),
     auth=AuthSettings(
@@ -484,40 +484,29 @@ async def send_file(
 
 
 @mcp.tool(
-    description="Send a notification to AIVA or to Mike. Takes no machine: target 'aiva' and the internal 'dev' compatibility target use the local CAO spool, while target 'mike' calls api.sendblue.co directly. target 'all' sends to AIVA and Mike. The result names exactly which channels delivered and which failed, and a partial delivery is reported as partial, not as success.",
+    description="Send a message to Dev, your parent and supervisor agent (the dev CAO session). Use this to report results, hand work back, ask for review, or say you are finished. Deliveries land in Dev's CAO inbox on the local CAO spool with your from label attached. Never use this to reach Mike.",
     annotations=WRITE_DESTRUCTIVE,
     structured_output=False,
 )
-async def notify(
+async def notify_dev(
     *,
-    target: str,
     message: str,
     from_: Annotated[str | None, Field(validation_alias="from")] = None,
 ) -> CallToolResult:
-    normalized = target.strip().lower()
     source = (from_ or "mcp-agent").strip() or "mcp-agent"
-    if normalized not in {"aiva", "dev", "mike", "all"}:
-        return _result({"ok": False, "status": "failed", "error": "'target' is required and must be one of: aiva, dev, mike, all"})
     if not message.strip():
         return _result({"ok": False, "status": "failed", "error": "'message' is required and cannot be empty"})
-
-    wanted = ["aiva", "mike"] if normalized == "all" else [normalized]
-    channels: list[dict[str, Any]] = []
-    for channel in wanted:
-        if channel == "mike":
-            channels.append(send_mike(message, source))
-            continue
-        path, content, inbox_target = make_spool_record(channel, message, source)
-        result = await AGENT_HUB.dispatch(
-            "oracle",
-            "write_file",
-            {"path": str(path), "content": content, "mode": "rewrite", "timeout_seconds": 10},
-        )
-        if result.get("ok"):
-            channels.append({"channel": channel, "ok": True, "detail": f"queued for {inbox_target} on local CAO spool"})
-        else:
-            channels.append({"channel": channel, "ok": False, "error": str(result.get("error") or "Oracle spool write failed")})
-    return _result(summarize(normalized, source, channels))
+    path, content, inbox_target = make_spool_record("dev", message, source)
+    result = await AGENT_HUB.dispatch(
+        "oracle",
+        "write_file",
+        {"path": str(path), "content": content, "mode": "rewrite", "timeout_seconds": 10},
+    )
+    if result.get("ok"):
+        channels: list[dict[str, Any]] = [{"channel": "dev", "ok": True, "detail": f"queued for {inbox_target} on local CAO spool"}]
+    else:
+        channels = [{"channel": "dev", "ok": False, "error": str(result.get("error") or "Oracle spool write failed")}]
+    return _result(summarize("dev", source, channels))
 
 
 @mcp.tool(description=VOICE_DESCRIPTION, annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True), structured_output=False)

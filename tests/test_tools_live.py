@@ -275,9 +275,9 @@ async def test_offline_machine_is_reported_not_connected():
         assert "not connected" in parsed["error"]
 
 
-async def test_notify_rejects_empty_message():
+async def test_notify_dev_rejects_empty_message():
     async with Rig() as rig:
-        parsed, is_error = await rig.call_tool("notify", {"target": "aiva", "message": "   "})
+        parsed, is_error = await rig.call_tool("notify_dev", {"message": "   "})
         assert is_error
         assert parsed["ok"] is False
         assert "message" in parsed["error"].lower()
